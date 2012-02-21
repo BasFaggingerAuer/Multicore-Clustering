@@ -1,0 +1,33 @@
+  ==  Multi-core clustering software  ==
+
+Created by Bas Fagginger Auer, 2011-2012.
+
+Released under the GNU General Public License version 3 as published by the Free Software Foundation (see COPYING).
+
+This software accompanies the article 'Graph Coarsening and Clustering on the GPU' by B. O. Fagginger Auer and R. H. Bisseling, submitted for publication to the 10th DIMACS challenge workshop, and provides code for the CLU_TBB and CLU_CUDA clustering entries to the 10th DIMACS challenge.
+
+  ==  Installation  ==
+
+To build this software, it is necessary to have access to the following tools:
+
+ - A C++ compiler,
+ - CMake (http://www.cmake.org/),
+ - A CUDA-compatible GPU,
+
+as well as the following development libraries:
+
+ - NVIDIA CUDA (http://www.nvidia.com/object/cuda_home.html),
+ - CUDA Thrust (http://code.google.com/p/thrust/),
+ - Threading Building Blocks (http://threadingbuildingblocks.org/),
+ - Boost iostreams and program_options (http://www.boost.org/).
+
+Compile instructions (from the current directory):
+
+ - mkdir build
+ - cd build
+ - cmake ..
+ - make
+
+If the compilation was successful, you should now have access to clustering executables in the directory build/bin/.
+To generate timings and modularities for the paper, use the stats.sh and benchmark.sh scripts (the results are stored in the results/ directory, together with GNUplot scripts to generate the graphs).
+To generate the 10th DIMACS challenge output, use the script dimacs.sh.

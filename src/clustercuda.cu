@@ -361,7 +361,7 @@ __global__ void d_coarsenCountNeighbours(int * const sigma, const int * const ka
 }
 
 //Copy all neighbours to the coarse graph.
-__global__ void d_coarsenCopyNeighbours(int2 * const neighbours, const int * const sigma, const int * const kappaInv, const int * const permute, const int nrVertices)
+__global__ void d_coarsenCopyNeighbours(int2 * const neighbours, const int * const sigma, const int * const kappaInv, const int * const kappa, const int * const permute, const int nrVertices)
 {
 	const int i = blockIdx.x*blockDim.x + threadIdx.x;
 
@@ -376,25 +376,10 @@ __global__ void d_coarsenCopyNeighbours(int2 * const neighbours, const int * con
 		
 		for (int k = r.x; k < r.y; ++k)
 		{
-			neighbours[count++] = tex1Dfetch(neighboursTexture, k);
+			const int2 n = tex1Dfetch(neighboursTexture, k);
+			
+			neighbours[count++] = make_int2(kappa[n.x], n.y);
 		}
-	}
-}
-
-//Apply projection map to all neighbours.
-__global__ void d_coarsenProjectNeighbours(int2 * const neighbours, const int * const sigma, const int * const kappa, const int nrVertices)
-{
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
-
-	if (i >= nrVertices) return;
-	
-	const int2 si = make_int2(sigma[i], sigma[i + 1]);
-	
-	for (int j = si.x; j < si.y; ++j)
-	{
-		const int2 n = neighbours[j];
-		
-		neighbours[j] = make_int2(kappa[n.x], n.y);
 	}
 }
 
@@ -873,8 +858,7 @@ vector<int> ClusterCUDA::cluster(const Graph &graph, const double &quality, Draw
 		d_coarsenCountNeighbours<<<nrCoarseBlocks, blockSize>>>(raw_pointer_cast(&d_match[0]), raw_pointer_cast(&d_kappaInv[0]), raw_pointer_cast(&d_pi[0]), h_nrVertices[1 - cur]);
 		d_match[h_nrVertices[1 - cur]] = 0;
 		thrust::exclusive_scan(d_match.begin(), d_match.begin() + h_nrVertices[1 - cur] + 1, d_sigma.begin());
-		d_coarsenCopyNeighbours<<<nrCoarseBlocks, blockSize>>>(raw_pointer_cast(&d_neighbours[1 - cur][0]), raw_pointer_cast(&d_sigma[0]), raw_pointer_cast(&d_kappaInv[0]), raw_pointer_cast(&d_pi[0]), h_nrVertices[1 - cur]);
-		d_coarsenProjectNeighbours<<<nrCoarseBlocks, blockSize>>>(raw_pointer_cast(&d_neighbours[1 - cur][0]), raw_pointer_cast(&d_sigma[0]), raw_pointer_cast(&d_kappa[0]), h_nrVertices[1 - cur]);
+		d_coarsenCopyNeighbours<<<nrCoarseBlocks, blockSize>>>(raw_pointer_cast(&d_neighbours[1 - cur][0]), raw_pointer_cast(&d_sigma[0]), raw_pointer_cast(&d_kappaInv[0]), raw_pointer_cast(&d_kappa[0]), raw_pointer_cast(&d_pi[0]), h_nrVertices[1 - cur]);
 		d_coarsenCompressNeighbours<<<nrCoarseBlocks, blockSize>>>(raw_pointer_cast(&d_neighbourRanges[1 - cur][0]), raw_pointer_cast(&d_neighbours[1 - cur][0]), raw_pointer_cast(&d_sigma[0]), h_nrVertices[1 - cur]);
 		
 		//Unbind textures.

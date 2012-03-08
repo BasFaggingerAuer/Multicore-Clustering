@@ -279,8 +279,10 @@ int main(int argc, char **argv)
 			{
 				Cluster *cluster = 0;
 				
+				cout << "Starting clustering..." << endl;
+				
 				if (quality == 1) cluster = new ClusterTBB();
-				else if (quality == 2) cluster = new ClusterCUDA();
+				else if (quality == 2) cluster = new ClusterCUDA(32, 14);
 				
 				if (cluster)
 				{

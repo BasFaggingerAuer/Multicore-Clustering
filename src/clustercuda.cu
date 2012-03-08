@@ -46,12 +46,14 @@ using namespace clu;
 using namespace std;
 using namespace thrust;
 
-//We stop trying to increase the modularity if we drop below 10 percent of the modularity of the best encountered clustering.
-#define MATCH_ITERATIONS 64
-#define LEFTROTATE(a, b) (((a) << (b)) | ((a) >> (32 - (b))))
+//Performance parameters.
+#define BLOCKS_PER_MP 4
+#define WARPS_PER_BLOCK 4
+#define MATCH_ITERATIONS 32
 
 //==== Kernel variables ====
 __device__ int d_keepMatching;
+__device__ __constant__ int d_kernelStep;
 
 texture<int2, cudaTextureType1D, cudaReadModeElementType> neighbourRangesTexture;
 texture<int2, cudaTextureType1D, cudaReadModeElementType> neighboursTexture;
@@ -74,68 +76,229 @@ texture<float2, cudaTextureType1D, cudaReadModeElementType> coordinatesTexture;
 __global__ void d_matchColour(int * const match, const int nrVertices, const uint random)
 {
  	//See Figure 2 of 'GPU Random Numbers via the Tiny Encryption Algorithm', Zafar (2010).
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
+	
+	while (i < nrVertices)
+	{
+		//Can this vertex still be matched?
+		if (match[i] < 2)
+		{
+			//Indicate that this matching is not yet maximal.
+			d_keepMatching = 1;
 
-	if (i >= nrVertices) return;
-
-	//Can this vertex still be matched?
-	if (match[i] >= 2) return;
-	
-	//Indicate that this matching is not yet maximal.
-	d_keepMatching = 1;
-
-	//Start hashing.
-	uint sum = 0, v0 = i, v1 = random;
-	
-	sum += 0x9e3779b9;
-	v0 += ((v1 << 4) + 0xa341316c)^(v1 + sum)^((v1 >> 5) + 0xc8013ea4);
-	v1 += ((v0 << 4) + 0xad90777d)^(v0 + sum)^((v0 >> 5) + 0x7e95761e);
-	
-	sum += 0x9e3779b9;
-	v0 += ((v1 << 4) + 0xa341316c)^(v1 + sum)^((v1 >> 5) + 0xc8013ea4);
-	v1 += ((v0 << 4) + 0xad90777d)^(v0 + sum)^((v0 >> 5) + 0x7e95761e);
-	
-	sum += 0x9e3779b9;
-	v0 += ((v1 << 4) + 0xa341316c)^(v1 + sum)^((v1 >> 5) + 0xc8013ea4);
-	v1 += ((v0 << 4) + 0xad90777d)^(v0 + sum)^((v0 >> 5) + 0x7e95761e);
-	
-	sum += 0x9e3779b9;
-	v0 += ((v1 << 4) + 0xa341316c)^(v1 + sum)^((v1 >> 5) + 0xc8013ea4);
-	v1 += ((v0 << 4) + 0xad90777d)^(v0 + sum)^((v0 >> 5) + 0x7e95761e);
-	
-	match[i] = ((v0 + v1) < MATCH_BARRIER ? 0 : 1);
+			//Start hashing.
+			uint sum = 0, v0 = i, v1 = random;
+			
+			sum += 0x9e3779b9;
+			v0 += ((v1 << 4) + 0xa341316c)^(v1 + sum)^((v1 >> 5) + 0xc8013ea4);
+			v1 += ((v0 << 4) + 0xad90777d)^(v0 + sum)^((v0 >> 5) + 0x7e95761e);
+			
+			sum += 0x9e3779b9;
+			v0 += ((v1 << 4) + 0xa341316c)^(v1 + sum)^((v1 >> 5) + 0xc8013ea4);
+			v1 += ((v0 << 4) + 0xad90777d)^(v0 + sum)^((v0 >> 5) + 0x7e95761e);
+			
+			sum += 0x9e3779b9;
+			v0 += ((v1 << 4) + 0xa341316c)^(v1 + sum)^((v1 >> 5) + 0xc8013ea4);
+			v1 += ((v0 << 4) + 0xad90777d)^(v0 + sum)^((v0 >> 5) + 0x7e95761e);
+			
+			sum += 0x9e3779b9;
+			v0 += ((v1 << 4) + 0xa341316c)^(v1 + sum)^((v1 >> 5) + 0xc8013ea4);
+			v1 += ((v0 << 4) + 0xad90777d)^(v0 + sum)^((v0 >> 5) + 0x7e95761e);
+			
+			match[i] = ((v0 + v1) < MATCH_BARRIER ? 0 : 1);
+		}
+		
+		i += d_kernelStep;
+	}
 }
 
 //Let all blue vertices propose to a red neighbour.
 __global__ void d_matchPropose(int * const requests, const int * const match, const int nrVertices, const long twoOmega)
 {
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
 
-	if (i >= nrVertices) return;
-	
-	const int2 indices = tex1Dfetch(neighbourRangesTexture, i);
-	const long wgt = tex1Dfetch(vertexWeightsTexture, i);
-
-	//Look at all blue vertices and let them make requests.
-	if (match[i] == 0)
+	while (i < nrVertices)
 	{
-		long maxWeight = LONG_MIN;
-		int candidate = nrVertices;
-		int dead = 1;
+		const int2 indices = tex1Dfetch(neighbourRangesTexture, i);
+		const long wgt = tex1Dfetch(vertexWeightsTexture, i);
 
-		for (int j = indices.x; j < indices.y; ++j)
+		//Look at all blue vertices and let them make requests.
+		if (match[i] == 0)
 		{
-			//Only propose to red neighbours.
-			const int2 ni = tex1Dfetch(neighboursTexture, j);
-			const int nm = match[ni.x];
+			long maxWeight = LONG_MIN;
+			int candidate = nrVertices;
+			int dead = 1;
 
-			//Do we have an unmatched neighbour?
-			if (nm < 4)
+			for (int j = indices.x; j < indices.y; ++j)
 			{
-				//Is this neighbour red?
-				if (nm == 1)
+				//Only propose to red neighbours.
+				const int2 ni = tex1Dfetch(neighboursTexture, j);
+				const int nm = match[ni.x];
+
+				//Do we have an unmatched neighbour?
+				if (nm < 4)
 				{
-					//Propose to the heaviest neighbour.
+					//Is this neighbour red?
+					if (nm == 1)
+					{
+						//Propose to the heaviest neighbour.
+						const long weight = twoOmega*(long)ni.y - wgt*(long)tex1Dfetch(vertexWeightsTexture, ni.x);
+
+						if (weight > maxWeight)
+						{
+							maxWeight = weight;
+							candidate = ni.x;
+						}
+					}
+					
+					dead = 0;
+				}
+			}
+
+			requests[i] = candidate + dead;
+		}
+		else
+		{
+			//Clear request value.
+			requests[i] = nrVertices;
+		}
+		
+		i += d_kernelStep;
+	}
+}
+
+//Let each red vertex respond to one proposal.
+__global__ void d_matchRespond(int * const requests, const int * const match, const int nrVertices, const long twoOmega)
+{
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
+	
+	while (i < nrVertices)
+	{
+		const int2 indices = tex1Dfetch(neighbourRangesTexture, i);
+		const long wgt = tex1Dfetch(vertexWeightsTexture, i);
+
+		//Look at all red vertices.
+		if (match[i] == 1)
+		{
+			long maxWeight = LONG_MIN;
+			int candidate = nrVertices;
+
+			//Select heaviest available proposer.
+			for (int j = indices.x; j < indices.y; ++j)
+			{
+				const int2 ni = tex1Dfetch(neighboursTexture, j);
+
+				//Only respond to blue neighbours.
+				if (match[ni.x] == 0)
+				{
+					const long weight = twoOmega*(long)ni.y - wgt*(long)tex1Dfetch(vertexWeightsTexture, ni.x);
+
+					if (weight > maxWeight)
+					{
+						if (requests[ni.x] == i)
+						{
+							maxWeight = weight;
+							candidate = ni.x;
+						}
+					}
+				}
+			}
+
+			if (candidate < nrVertices)
+			{
+				requests[i] = candidate;
+			}
+		}
+		
+		i += d_kernelStep;
+	}
+}
+
+//Match compatible requests and responses.
+__global__ void d_matchMatch(int * const match, const int * const requests, const int nrVertices)
+{
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
+
+	while (i < nrVertices)
+	{
+		const int r = requests[i];
+
+		//Only unmatched vertices make requests.
+		if (r == nrVertices + 1)
+		{
+			//This is vertex without any available neighbours, discard it.
+			match[i] = 2;
+		}
+		else if (r < nrVertices)
+		{
+			//This vertex has made a valid request.
+			if (requests[r] == i)
+			{
+				//Match the vertices if the request was mutual.
+				match[i] = 4 + min(i, r);
+			}
+		}
+		
+		i += d_kernelStep;
+	}
+}
+
+//Match satellite vertices to prevent star graphs from stopping the coarsening process.
+__global__ void d_matchMarkSatellites(int * const requests, const int * const match, const int nrVertices)
+{
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
+
+	while (i < nrVertices)
+	{
+		const int2 indices = tex1Dfetch(neighbourRangesTexture, i);
+		const long wgt = indices.y - indices.x;
+		const int m = match[i];
+		
+		//Check if this is a satellite vertex (only unmatched vertices can be satellites).
+		long neighbourDegrees = 0;
+		
+		if (m < 4)
+		{
+			for (int j = indices.x; j < indices.y; ++j)
+			{
+				const int2 ni = tex1Dfetch(neighboursTexture, j);
+				const int2 nindices = tex1Dfetch(neighbourRangesTexture, ni.x);
+
+				neighbourDegrees += nindices.y - nindices.x;
+			}
+		}
+		
+		//Mark satellites red and non-satellites blue, in the requests array.
+		requests[i] = ((MATCH_SATELLITE*wgt*wgt <= neighbourDegrees && m < 4) ? 0 : 1);
+		
+		i += d_kernelStep;
+	}
+}
+
+//Match all satellites (red) to their heaviest non-satellite (blue) neighbour.
+__global__ void d_matchMatchSatellites(int * const match, const int * const requests, const int nrVertices, const long twoOmega)
+{
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
+
+	while (i < nrVertices)
+	{
+		const int2 indices = tex1Dfetch(neighbourRangesTexture, i);
+		const long wgt = tex1Dfetch(vertexWeightsTexture, i);
+		
+		//Non-satellites are skipped.
+		if (requests[i] == 0)
+		{
+			//Find heaviest neighbour.
+			long maxWeight = LONG_MIN;
+			int candidate = nrVertices;
+
+			for (int j = indices.x; j < indices.y; ++j)
+			{
+				const int2 ni = tex1Dfetch(neighboursTexture, j);
+
+				if (requests[ni.x] != 0)
+				{
+					//Match to the heaviest non-satellite neighbour.
 					const long weight = twoOmega*(long)ni.y - wgt*(long)tex1Dfetch(vertexWeightsTexture, ni.x);
 
 					if (weight > maxWeight)
@@ -144,155 +307,14 @@ __global__ void d_matchPropose(int * const requests, const int * const match, co
 						candidate = ni.x;
 					}
 				}
-				
-				dead = 0;
 			}
+			
+			//If such a neighbour has been found, perform a matching.
+			if (candidate < nrVertices) match[i] = match[candidate];
 		}
-
-		requests[i] = candidate + dead;
+		
+		i += d_kernelStep;
 	}
-	else
-	{
-		//Clear request value.
-		requests[i] = nrVertices;
-	}
-}
-
-//Let each red vertex respond to one proposal.
-__global__ void d_matchRespond(int * const requests, const int * const match, const int nrVertices, const long twoOmega)
-{
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
-
-	if (i >= nrVertices) return;
-	
-	const int2 indices = tex1Dfetch(neighbourRangesTexture, i);
-	const long wgt = tex1Dfetch(vertexWeightsTexture, i);
-
-	//Look at all red vertices.
-	if (match[i] == 1)
-	{
-		long maxWeight = LONG_MIN;
-		int candidate = nrVertices;
-
-		//Select heaviest available proposer.
-		for (int j = indices.x; j < indices.y; ++j)
-		{
-			const int2 ni = tex1Dfetch(neighboursTexture, j);
-
-			//Only respond to blue neighbours.
-			if (match[ni.x] == 0)
-			{
-				const long weight = twoOmega*(long)ni.y - wgt*(long)tex1Dfetch(vertexWeightsTexture, ni.x);
-
-				if (weight > maxWeight)
-				{
-					if (requests[ni.x] == i)
-					{
-						maxWeight = weight;
-						candidate = ni.x;
-					}
-				}
-			}
-		}
-
-		if (candidate < nrVertices)
-		{
-			requests[i] = candidate;
-		}
-	}
-}
-
-//Match compatible requests and responses.
-__global__ void d_matchMatch(int * const match, const int * const requests, const int nrVertices)
-{
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
-
-	if (i >= nrVertices) return;
-
-	const int r = requests[i];
-
-	//Only unmatched vertices make requests.
-	if (r == nrVertices + 1)
-	{
-		//This is vertex without any available neighbours, discard it.
-		match[i] = 2;
-	}
-	else if (r < nrVertices)
-	{
-		//This vertex has made a valid request.
-		if (requests[r] == i)
-		{
-			//Match the vertices if the request was mutual.
-			match[i] = 4 + min(i, r);
-		}
-	}
-}
-
-//Match satellite vertices to prevent star graphs from stopping the coarsening process.
-__global__ void d_matchMarkSatellites(int * const requests, const int * const match, const int nrVertices)
-{
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
-
-	if (i >= nrVertices) return;
-	
-	const int2 indices = tex1Dfetch(neighbourRangesTexture, i);
-	const long wgt = indices.y - indices.x;
-	const int m = match[i];
-	
-	//Check if this is a satellite vertex (only unmatched vertices can be satellites).
-	long neighbourDegrees = 0;
-	
-	if (m < 4)
-	{
-		for (int j = indices.x; j < indices.y; ++j)
-		{
-			const int2 ni = tex1Dfetch(neighboursTexture, j);
-			const int2 nindices = tex1Dfetch(neighbourRangesTexture, ni.x);
-
-			neighbourDegrees += nindices.y - nindices.x;
-		}
-	}
-	
-	//Mark satellites red and non-satellites blue, in the requests array.
-	requests[i] = ((MATCH_SATELLITE*wgt*wgt <= neighbourDegrees && m < 4) ? 0 : 1);
-}
-
-//Match all satellites (red) to their heaviest non-satellite (blue) neighbour.
-__global__ void d_matchMatchSatellites(int * const match, const int * const requests, const int nrVertices, const long twoOmega)
-{
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
-
-	if (i >= nrVertices) return;
-	
-	const int2 indices = tex1Dfetch(neighbourRangesTexture, i);
-	const long wgt = tex1Dfetch(vertexWeightsTexture, i);
-	
-	//Non-satellites are skipped.
-	if (requests[i] != 0) return;
-	
-	//Find heaviest neighbour.
-	long maxWeight = LONG_MIN;
-	int candidate = nrVertices;
-
-	for (int j = indices.x; j < indices.y; ++j)
-	{
-		const int2 ni = tex1Dfetch(neighboursTexture, j);
-
-		if (requests[ni.x] != 0)
-		{
-			//Match to the heaviest non-satellite neighbour.
-			const long weight = twoOmega*(long)ni.y - wgt*(long)tex1Dfetch(vertexWeightsTexture, ni.x);
-
-			if (weight > maxWeight)
-			{
-				maxWeight = weight;
-				candidate = ni.x;
-			}
-		}
-	}
-	
-	//If such a neighbour has been found, perform a matching.
-	if (candidate < nrVertices) match[i] = match[candidate];
 }
 
 //==== Coarsening kernels ====
@@ -300,101 +322,117 @@ __global__ void d_matchMatchSatellites(int * const match, const int * const requ
 //Calculate new vertex weights.
 __global__ void d_coarsenCreateVertexWeights(int * const weights, const int * const kappaInv, const int * const permute, const int nrVertices)
 {
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
 
-	if (i >= nrVertices) return;
-	
-	const int2 ki = make_int2(kappaInv[i], kappaInv[i + 1]);
-	int w = 0;
-	
-	for (int j = ki.x; j < ki.y; ++j)
+	while (i < nrVertices)
 	{
-		w += tex1Dfetch(vertexWeightsTexture, permute[j]);
+		const int2 ki = make_int2(kappaInv[i], kappaInv[i + 1]);
+		int w = 0;
+		
+		for (int j = ki.x; j < ki.y; ++j)
+		{
+			w += tex1Dfetch(vertexWeightsTexture, permute[j]);
+		}
+		
+		weights[i] = w;
+		
+		i += d_kernelStep;
 	}
-	
-	weights[i] = w;
 }
 
 //Calculate new vertex coordinates.
 #ifndef LEAN
 __global__ void d_coarsenCreateVertexCoordinates(float2 * const coordinates, const int * const kappaInv, const int * const permute, const int nrVertices)
 {
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
 
-	if (i >= nrVertices) return;
-	
-	const int2 ki = make_int2(kappaInv[i], kappaInv[i + 1]);
-	float2 c = make_float2(0.0f, 0.0f);
-	
-	for (int j = ki.x; j < ki.y; ++j)
+	while (i < nrVertices)
 	{
-		const float2 dc = tex1Dfetch(coordinatesTexture, permute[j]);
+		const int2 ki = make_int2(kappaInv[i], kappaInv[i + 1]);
+		float2 c = make_float2(0.0f, 0.0f);
 		
-		c.x += dc.x;
-		c.y += dc.y;
+		for (int j = ki.x; j < ki.y; ++j)
+		{
+			const float2 dc = tex1Dfetch(coordinatesTexture, permute[j]);
+			
+			c.x += dc.x;
+			c.y += dc.y;
+		}
+		
+		const float inv = 1.0f/(float)(ki.y - ki.x);
+		
+		coordinates[i] = make_float2(c.x*inv, c.y*inv);
+		
+		i += d_kernelStep;
 	}
-	
-	const float inv = 1.0f/(float)(ki.y - ki.x);
-	
-	coordinates[i] = make_float2(c.x*inv, c.y*inv);
 }
 #endif
 
 //Setup counting array for a parallel scan to create the offsets in the graph's neighbour list.
 __global__ void d_coarsenCountNeighbours(int * const sigma, const int * const kappaInv, const int * const permute, const int nrVertices)
 {
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
 
-	if (i >= nrVertices) return;
-	
-	const int2 ki = make_int2(kappaInv[i], kappaInv[i + 1]);
-	int s = 0;
-	
-	for (int j = ki.x; j < ki.y; ++j)
+	while (i < nrVertices)
 	{
-		const int2 r = tex1Dfetch(neighbourRangesTexture, permute[j]);
+		const int2 ki = make_int2(kappaInv[i], kappaInv[i + 1]);
+		int s = 0;
 		
-		s += r.y - r.x;
+		for (int j = ki.x; j < ki.y; ++j)
+		{
+			const int2 r = tex1Dfetch(neighbourRangesTexture, permute[j]);
+			
+			s += r.y - r.x;
+		}
+		
+		sigma[i] = s;
+		
+		i += d_kernelStep;
 	}
-	
-	sigma[i] = s;
 }
 
 //Copy all neighbours to the coarse graph.
 __global__ void d_coarsenCopyNeighbours(int2 * const neighbours, const int * const sigma, const int * const kappaInv, const int * const permute, const int nrVertices)
 {
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
 
-	if (i >= nrVertices) return;
-	
-	const int2 ki = make_int2(kappaInv[i], kappaInv[i + 1]);
-	int count = sigma[i];
-	
-	for (int j = ki.x; j < ki.y; ++j)
+	while (i < nrVertices)
 	{
-		const int2 r = tex1Dfetch(neighbourRangesTexture, permute[j]);
+		const int2 ki = make_int2(kappaInv[i], kappaInv[i + 1]);
+		int count = sigma[i];
 		
-		for (int k = r.x; k < r.y; ++k)
+		for (int j = ki.x; j < ki.y; ++j)
 		{
-			neighbours[count++] = tex1Dfetch(neighboursTexture, k);
+			const int2 r = tex1Dfetch(neighbourRangesTexture, permute[j]);
+			
+			for (int k = r.x; k < r.y; ++k)
+			{
+				neighbours[count++] = tex1Dfetch(neighboursTexture, k);
+			}
 		}
+		
+		i += d_kernelStep;
 	}
 }
 
 //Apply projection map to all neighbours.
+//TODO: Merge with CopyNeighbours.
 __global__ void d_coarsenProjectNeighbours(int2 * const neighbours, const int * const sigma, const int * const kappa, const int nrVertices)
 {
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
 
-	if (i >= nrVertices) return;
-	
-	const int2 si = make_int2(sigma[i], sigma[i + 1]);
-	
-	for (int j = si.x; j < si.y; ++j)
+	while (i < nrVertices)
 	{
-		const int2 n = neighbours[j];
+		const int2 si = make_int2(sigma[i], sigma[i + 1]);
 		
-		neighbours[j] = make_int2(kappa[n.x], n.y);
+		for (int j = si.x; j < si.y; ++j)
+		{
+			const int2 n = neighbours[j];
+			
+			neighbours[j] = make_int2(kappa[n.x], n.y);
+		}
+		
+		i += d_kernelStep;
 	}
 }
 
@@ -446,85 +484,97 @@ __device__ void d_coarsenHeapSort(int2 * const list, const int size)
 //Compress projected neighbour lists.
 __global__ void d_coarsenCompressNeighbours(int2 * const neighbourRanges, int2 * const neighbours, const int * const sigma, const int nrVertices)
 {
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
 
-	if (i >= nrVertices) return;
-	
-	const int2 si = make_int2(sigma[i], sigma[i + 1]);
-	
-	//Do nothing if the neighbour range is empty.
-	if (si.x == si.y)
+	while (i < nrVertices)
 	{
-		neighbourRanges[i] = make_int2(si.x, si.y);
-		return;
-	}
-	
-	//Sort neighbour ranges.
-	d_coarsenHeapSort(&neighbours[si.x], si.y - si.x);
-	
-	//Extract unique neighbours.
-	//Do NOT store self-edges, these are invalid for matching.
-	int count = si.x;
-	int2 n = neighbours[si.x];
-	
-	for (int j = si.x + 1; j < si.y; ++j)
-	{
-		const int2 n2 = neighbours[j];
+		const int2 si = make_int2(sigma[i], sigma[i + 1]);
 		
-		if (n2.x == n.x)
+		//Do nothing if the neighbour range is empty.
+		if (si.x == si.y)
 		{
-			//Sum weights of joined edges.
-			n.y += n2.y;
+			neighbourRanges[i] = make_int2(si.x, si.y);
 		}
 		else
 		{
-			//We encounter a new neighbour, so store the current one.
+			//Sort neighbour ranges.
+			d_coarsenHeapSort(&neighbours[si.x], si.y - si.x);
+			
+			//Extract unique neighbours.
+			//Do NOT store self-edges, these are invalid for matching.
+			int count = si.x;
+			int2 n = neighbours[si.x];
+			
+			for (int j = si.x + 1; j < si.y; ++j)
+			{
+				const int2 n2 = neighbours[j];
+				
+				if (n2.x == n.x)
+				{
+					//Sum weights of joined edges.
+					n.y += n2.y;
+				}
+				else
+				{
+					//We encounter a new neighbour, so store the current one.
+					if (n.x != i) neighbours[count++] = n;
+					
+					n = n2;
+				}
+			}
+			
 			if (n.x != i) neighbours[count++] = n;
 			
-			n = n2;
+			neighbourRanges[i] = make_int2(si.x, count);
 		}
+		
+		i += d_kernelStep;
 	}
-	
-	if (n.x != i) neighbours[count++] = n;
-	
-	neighbourRanges[i] = make_int2(si.x, count);
 }
 
 //==== Clustering kernels ====
 __global__ void d_clusterGetModularity(long * const clusterMods, const int nrVertices, const long twoOmega)
 {
-	const int i = blockIdx.x*blockDim.x + threadIdx.x;
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
 
-	if (i >= nrVertices) return;
-	
-	const int2 indices = tex1Dfetch(neighbourRangesTexture, i);
-	const long wgt = tex1Dfetch(vertexWeightsTexture, i);
-	long extWgt = 0;
-
-	//Sum external edge weights.
-	for (int j = indices.x; j < indices.y; ++j)
+	while (i < nrVertices)
 	{
-		const int2 ni = tex1Dfetch(neighboursTexture, j);
+		const int2 indices = tex1Dfetch(neighbourRangesTexture, i);
+		const long wgt = tex1Dfetch(vertexWeightsTexture, i);
+		long extWgt = 0;
+
+		//Sum external edge weights.
+		for (int j = indices.x; j < indices.y; ++j)
+		{
+			const int2 ni = tex1Dfetch(neighboursTexture, j);
+			
+			extWgt += (long)ni.y;
+		}
 		
-		extWgt += (long)ni.y;
+		//Store contribution to modularity.
+		clusterMods[i] = wgt*(twoOmega - wgt) - twoOmega*extWgt;
+		
+		i += d_kernelStep;
 	}
-	
-	//Store contribution to modularity.
-	clusterMods[i] = wgt*(twoOmega - wgt) - twoOmega*extWgt;
 }
 
 //==== CUDA kernels end ====
 
-ClusterCUDA::ClusterCUDA(const int &_blockSize) :
+ClusterCUDA::ClusterCUDA(const int &_warpSize, const int &_nrMultiProcessors) :
 	Cluster(),
-	blockSize(_blockSize)
+	warpSize(_warpSize),
+	nrMultiProcessors(_nrMultiProcessors),
+	nrThreads(warpSize*WARPS_PER_BLOCK),
+	nrBlocks(nrMultiProcessors*BLOCKS_PER_MP)
 {
-	if (blockSize <= 0)
+	if (warpSize <= 0 || nrMultiProcessors <= 0)
 	{
-		cerr << "Invalid CUDA block size (" << blockSize << ")!" << endl;
+		cerr << "Invalid CUDA device parameters!" << endl;
 		
 		throw exception();
 	}
+	
+	cerr << "Using CUDA device with warp size " << warpSize << " and " << nrMultiProcessors << " multi-processors." << endl;
 }
 
 ClusterCUDA::~ClusterCUDA()
@@ -537,7 +587,6 @@ void ClusterCUDA::match(int * const d_match, int * const d_requests, const int &
 	//Keep matching until we obtain a maximal matching.
 	int count = 0;
 	int h_keepMatching = 1;
-	const int nrBlocks = (h_nrVertices + blockSize - 1)/blockSize;
 	
 	//Clear matching values.
 	cudaMemset(d_match, 0, h_nrVertices*sizeof(int));
@@ -548,17 +597,17 @@ void ClusterCUDA::match(int * const d_match, int * const d_requests, const int &
 		h_keepMatching = 0;
 		cudaMemcpyToSymbol(d_keepMatching, &h_keepMatching, sizeof(int));
 		
-		d_matchColour<<<nrBlocks, blockSize>>>(d_match, h_nrVertices, rand());
-		d_matchPropose<<<nrBlocks, blockSize>>>(d_requests, d_match, h_nrVertices, h_twoOmega);
-		d_matchRespond<<<nrBlocks, blockSize>>>(d_requests, d_match, h_nrVertices, h_twoOmega);
-		d_matchMatch<<<nrBlocks, blockSize>>>(d_match, d_requests, h_nrVertices);
+		d_matchColour<<<nrBlocks, nrThreads>>>(d_match, h_nrVertices, rand());
+		d_matchPropose<<<nrBlocks, nrThreads>>>(d_requests, d_match, h_nrVertices, h_twoOmega);
+		d_matchRespond<<<nrBlocks, nrThreads>>>(d_requests, d_match, h_nrVertices, h_twoOmega);
+		d_matchMatch<<<nrBlocks, nrThreads>>>(d_match, d_requests, h_nrVertices);
 
 		cudaMemcpyFromSymbol(&h_keepMatching, d_keepMatching, sizeof(int));
 	}
 	
 	//Get rid of satellites.
-	d_matchMarkSatellites<<<nrBlocks, blockSize>>>(d_requests, d_match, h_nrVertices);
-	d_matchMatchSatellites<<<nrBlocks, blockSize>>>(d_match, d_requests, h_nrVertices, h_twoOmega);
+	d_matchMarkSatellites<<<nrBlocks, nrThreads>>>(d_requests, d_match, h_nrVertices);
+	d_matchMatchSatellites<<<nrBlocks, nrThreads>>>(d_match, d_requests, h_nrVertices, h_twoOmega);
 
 #ifndef NDEBUG
 	if (count >= MATCH_ITERATIONS)
@@ -637,6 +686,15 @@ vector<int> ClusterCUDA::cluster(const Graph &graph, const double &quality, Draw
 		drawer->drawGraphMatrix(graph);
 		drawer->drawGraphCoordinates(graph);
 	}
+	
+	//Set correct number of vertices per kernel.
+	int h_kernelStep = nrBlocks*nrThreads;
+	
+	cudaMemcpyToSymbol(d_kernelStep, &h_kernelStep, sizeof(int));
+	
+#ifndef NDEBUG
+	cerr << "Clustering with " << nrBlocks << " blocks of " << nrThreads << " threads, resulting in " << graph.nrVertices/(nrBlocks*nrThreads) << " vertices per kernel..." << endl;
+#endif
 	
 	//==== Allocate memory.
 	//Variables for matching.
@@ -736,9 +794,7 @@ vector<int> ClusterCUDA::cluster(const Graph &graph, const double &quality, Draw
 #endif
 		
 		//== Calculate modularity of current clustering and copy if it is the best so far.
-		const int nrFineBlocks = (h_nrVertices[cur] + blockSize - 1)/blockSize;
-		
-		d_clusterGetModularity<<<nrFineBlocks, blockSize>>>(raw_pointer_cast(&d_clusterMods[0]), h_nrVertices[cur], h_twoOmega);
+		d_clusterGetModularity<<<nrBlocks, nrThreads>>>(raw_pointer_cast(&d_clusterMods[0]), h_nrVertices[cur], h_twoOmega);
 		
 		const long mod = thrust::reduce(d_clusterMods.begin(), d_clusterMods.begin() + h_nrVertices[cur]);
 		
@@ -861,21 +917,20 @@ vector<int> ClusterCUDA::cluster(const Graph &graph, const double &quality, Draw
 #endif
 		
 		//Start creating the coarse graph.
-		const int nrCoarseBlocks = (h_nrVertices[1 - cur] + blockSize - 1)/blockSize;
 		
 		//Calculate vertex weights.
-		d_coarsenCreateVertexWeights<<<nrCoarseBlocks, blockSize>>>(raw_pointer_cast(&d_vertexWeights[1 - cur][0]), raw_pointer_cast(&d_kappaInv[0]), raw_pointer_cast(&d_pi[0]), h_nrVertices[1 - cur]);
+		d_coarsenCreateVertexWeights<<<nrBlocks, nrThreads>>>(raw_pointer_cast(&d_vertexWeights[1 - cur][0]), raw_pointer_cast(&d_kappaInv[0]), raw_pointer_cast(&d_pi[0]), h_nrVertices[1 - cur]);
 #ifndef LEAN
-		d_coarsenCreateVertexCoordinates<<<nrCoarseBlocks, blockSize>>>(raw_pointer_cast(&d_coordinates[1 - cur][0]), raw_pointer_cast(&d_kappaInv[0]), raw_pointer_cast(&d_pi[0]), h_nrVertices[1 - cur]);
+		d_coarsenCreateVertexCoordinates<<<nrBlocks, nrThreads>>>(raw_pointer_cast(&d_coordinates[1 - cur][0]), raw_pointer_cast(&d_kappaInv[0]), raw_pointer_cast(&d_pi[0]), h_nrVertices[1 - cur]);
 #endif
 		
 		//Create new neighbour lists for the coarse graph.
-		d_coarsenCountNeighbours<<<nrCoarseBlocks, blockSize>>>(raw_pointer_cast(&d_match[0]), raw_pointer_cast(&d_kappaInv[0]), raw_pointer_cast(&d_pi[0]), h_nrVertices[1 - cur]);
+		d_coarsenCountNeighbours<<<nrBlocks, nrThreads>>>(raw_pointer_cast(&d_match[0]), raw_pointer_cast(&d_kappaInv[0]), raw_pointer_cast(&d_pi[0]), h_nrVertices[1 - cur]);
 		d_match[h_nrVertices[1 - cur]] = 0;
 		thrust::exclusive_scan(d_match.begin(), d_match.begin() + h_nrVertices[1 - cur] + 1, d_sigma.begin());
-		d_coarsenCopyNeighbours<<<nrCoarseBlocks, blockSize>>>(raw_pointer_cast(&d_neighbours[1 - cur][0]), raw_pointer_cast(&d_sigma[0]), raw_pointer_cast(&d_kappaInv[0]), raw_pointer_cast(&d_pi[0]), h_nrVertices[1 - cur]);
-		d_coarsenProjectNeighbours<<<nrCoarseBlocks, blockSize>>>(raw_pointer_cast(&d_neighbours[1 - cur][0]), raw_pointer_cast(&d_sigma[0]), raw_pointer_cast(&d_kappa[0]), h_nrVertices[1 - cur]);
-		d_coarsenCompressNeighbours<<<nrCoarseBlocks, blockSize>>>(raw_pointer_cast(&d_neighbourRanges[1 - cur][0]), raw_pointer_cast(&d_neighbours[1 - cur][0]), raw_pointer_cast(&d_sigma[0]), h_nrVertices[1 - cur]);
+		d_coarsenCopyNeighbours<<<nrBlocks, nrThreads>>>(raw_pointer_cast(&d_neighbours[1 - cur][0]), raw_pointer_cast(&d_sigma[0]), raw_pointer_cast(&d_kappaInv[0]), raw_pointer_cast(&d_pi[0]), h_nrVertices[1 - cur]);
+		d_coarsenProjectNeighbours<<<nrBlocks, nrThreads>>>(raw_pointer_cast(&d_neighbours[1 - cur][0]), raw_pointer_cast(&d_sigma[0]), raw_pointer_cast(&d_kappa[0]), h_nrVertices[1 - cur]);
+		d_coarsenCompressNeighbours<<<nrBlocks, nrThreads>>>(raw_pointer_cast(&d_neighbourRanges[1 - cur][0]), raw_pointer_cast(&d_neighbours[1 - cur][0]), raw_pointer_cast(&d_sigma[0]), h_nrVertices[1 - cur]);
 		
 		//Unbind textures.
 #ifndef LEAN

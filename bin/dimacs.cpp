@@ -47,12 +47,18 @@ using namespace clu;
 using namespace boost;
 using namespace tbb;
 
-void initCUDA(CUdevice &device, CUcontext &context, const int &deviceIndex)
+void initCUDA(CUdevice &device, CUcontext &context, cudaDeviceProp &properties, const int &deviceIndex)
 {
 	//Initialise CUDA.
 	if (cuInit(0) != CUDA_SUCCESS)
 	{
 		cerr << "Unable to initialise CUDA!" << endl;
+		throw std::exception();
+	}
+	
+	if (cudaGetDeviceProperties(&properties, deviceIndex) != cudaSuccess)
+	{
+		cerr << "Unable to retrieve device properties!" << endl;
 		throw std::exception();
 	}
 	
@@ -164,6 +170,7 @@ int main(int argc, char **argv)
 	string prefix = "";
 	CUdevice GPUDevice;
 	CUcontext GPUContext;
+	cudaDeviceProp GPUProperties;
 	int GPUDeviceIndex = -1;
 	int dimacsId = 0;
 	
@@ -221,7 +228,7 @@ int main(int argc, char **argv)
 	{
 		try
 		{
-			initCUDA(GPUDevice, GPUContext, GPUDeviceIndex);
+			initCUDA(GPUDevice, GPUContext, GPUProperties, GPUDeviceIndex);
 		}
 		catch (std::exception &e)
 		{
@@ -270,7 +277,7 @@ int main(int argc, char **argv)
 		else
 		{
 			cerr << "GPU parallel CUDA mode." << endl;
-			cluster = new ClusterCUDA();
+			cluster = new ClusterCUDA(GPUProperties.warpSize, GPUProperties.multiProcessorCount);
 		}
 		
 		//Perform clustering.

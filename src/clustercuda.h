@@ -15,7 +15,7 @@ namespace clu
 class ClusterCUDA : public Cluster
 {
 	public:
-		ClusterCUDA(const int & = 256);
+		ClusterCUDA(const int &, const int &);
 		~ClusterCUDA();
 		
 		std::vector<int> cluster(const Graph &, const double & = 1.0, Drawer * = 0) const;
@@ -30,7 +30,10 @@ class ClusterCUDA : public Cluster
 					const thrust::device_vector<float2> &,
 					const int &) const;
 		
-		const int blockSize;
+		const int warpSize;
+		const int nrMultiProcessors;
+		const int nrThreads;
+		const int nrBlocks;
 };
 
 }

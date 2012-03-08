@@ -58,12 +58,18 @@ ostream &operator << (ostream &out, const pair<double, double> &rhs)
 	return out;
 }
 
-void initCUDA(CUdevice &device, CUcontext &context, const int &deviceIndex)
+void initCUDA(CUdevice &device, CUcontext &context, cudaDeviceProp &properties, const int &deviceIndex)
 {
 	//Initialise CUDA.
 	if (cuInit(0) != CUDA_SUCCESS)
 	{
 		cerr << "Unable to initialise CUDA!" << endl;
+		throw std::exception();
+	}
+	
+	if (cudaGetDeviceProperties(&properties, deviceIndex) != cudaSuccess)
+	{
+		cerr << "Unable to retrieve device properties!" << endl;
 		throw std::exception();
 	}
 	
@@ -79,17 +85,6 @@ void initCUDA(CUdevice &device, CUcontext &context, const int &deviceIndex)
 		throw std::exception();
 	}
 
-	/*
-	if (cudaSetDevice(deviceIndex) != cudaSuccess)
-	{
-		cerr << "Unable to set device!" << endl;
-		throw std::exception();
-	}
-	
-	cudaDeviceProp prop;
-
-	cudaGetDeviceProperties(&prop, deviceIndex);
-	*/
 	char deviceName[256];
 	
 	cuDeviceGetName(deviceName, 256, device);
@@ -110,6 +105,7 @@ int main(int argc, char **argv)
 	string gnuplotFileName = "";
 	CUdevice GPUDevice;
 	CUcontext GPUContext;
+	cudaDeviceProp GPUProperties;
 	int GPUDeviceIndex = 0;
 	int nrTimeAvg = 1;
 	int runningMode = 0;
@@ -165,7 +161,7 @@ int main(int argc, char **argv)
 	{
 		try
 		{
-			initCUDA(GPUDevice, GPUContext, GPUDeviceIndex);
+			initCUDA(GPUDevice, GPUContext, GPUProperties, GPUDeviceIndex);
 		}
 		catch (std::exception &e)
 		{
@@ -219,7 +215,7 @@ int main(int argc, char **argv)
 		else if (runningMode == 2)
 		{
 			cerr << "GPU parallel CUDA mode." << endl;
-			cluster = new ClusterCUDA();
+			cluster = new ClusterCUDA(GPUProperties.warpSize, GPUProperties.multiProcessorCount);
 		}
 		
 		//Perform clustering the desired number of times.

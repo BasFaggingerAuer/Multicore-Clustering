@@ -191,6 +191,7 @@ vector<int> ClusterTBB::cluster(const Graph &graph, const double &quality, Drawe
 		if (drawer)
 		{
 			drawer->drawGraphMatrix(*cur);
+			drawer->drawGraphMatrixClustering(graph, clustering);
 			drawer->drawGraphCoordinates(*cur);
 		}
 #endif
@@ -205,6 +206,7 @@ vector<int> ClusterTBB::cluster(const Graph &graph, const double &quality, Drawe
 	if (drawer)
 	{
 		drawer->drawGraphMatrix(graph);
+		drawer->drawGraphMatrixClustering(graph, bestClustering);
 		drawer->drawGraphClustering(graph, bestClustering);
 	}
 	

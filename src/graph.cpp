@@ -21,6 +21,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <algorithm>
 #include <vector>
 #include <set>
+#include <map>
+#include <cmath>
 #include <cassert>
 
 #include "graph.h"
@@ -216,7 +218,106 @@ istream &Graph::readMETIS(istream &in)
 
 #ifndef NDEBUG
 	cerr << "Read a METIS graph with " << nrVertices << " vertices and " << nrEdges << " edges." << endl;
-	//"The graph vertices had " << nrVertexWeights << " weights and the edges " << (weightedEdges ? 1 : 0) << "." << endl;
+#endif
+
+	return in;
+}
+
+istream &Graph::readTAB2(istream &in, const string &experiment)
+{
+	//Reads a BioGRID TAB2 file from disk.
+	map<int, int> identifiers;
+	vector<int3> edges;
+
+	clear();
+
+	while (in.good())
+	{
+		string line;
+
+		getline(in, line);
+
+		//Skip all comments and empty lines.
+		while (!line.empty() && isspace(line[0])) line.erase(0, 1);
+
+		if (line.length() < 2) continue;
+		if (line[0] == '#') continue;
+		
+		//Find all words within this line, separated by tabs.
+		vector<string> words;
+		istringstream sline(line);
+		string word;
+		
+		while (getline(sline, word, '\t')) words.push_back(word);
+		
+		if (words.size() != 24)
+		{
+			cerr << "Invalid number of entries!" << endl;
+			throw exception();
+		}
+		
+		//Only include desired interactions.
+		if (words[11] != experiment) continue;
+		
+		const int u = atoi(words[3].c_str()), v = atoi(words[4].c_str());
+		
+		if (u == 0 || v == 0)
+		{
+			cerr << "Invalid identifiers!" << endl;
+			throw exception();
+		}
+		
+		//Have we already seen these identifiers?
+		if (identifiers.find(u) == identifiers.end()) identifiers[u] = nrVertices++;
+		if (identifiers.find(v) == identifiers.end()) identifiers[v] = nrVertices++;
+		
+		edges.push_back(make_int3(identifiers[u], identifiers[v], static_cast<int>(ceil(fabs(1000.0f*atof(words[18].c_str()))))));
+	}
+	
+	if (nrVertices <= 0 || edges.empty() || identifiers.empty())
+	{
+		cerr << "Empty graph!" << endl;
+		throw exception();
+	}
+	
+	//Convert edges to neighbour arrays.
+	neighbourRanges.assign(nrVertices, make_int2(0, 0));
+	vertexWeights.assign(nrVertices, 0);
+	neighbours.assign(2*edges.size(), make_int2(0, 0));
+	coordinates.assign(nrVertices, make_float2(0.0, 0.0));
+	nrEdges = edges.size();
+	
+	for (vector<int3>::const_iterator i = edges.begin(); i != edges.end(); ++i)
+	{
+		neighbourRanges[i->x].y++;
+		neighbourRanges[i->y].y++;
+	}
+	
+	for (int i = 1; i < nrVertices; ++i) neighbourRanges[i].x += neighbourRanges[i - 1].x + neighbourRanges[i - 1].y;
+	
+	assert(neighbourRanges[nrVertices - 1].x + neighbourRanges[nrVertices - 1].y == 2*static_cast<int>(edges.size()));
+	
+	for (int i = 0; i < nrVertices; ++i) neighbourRanges[i].y = neighbourRanges[i].x;
+	
+	for (vector<int3>::const_iterator i = edges.begin(); i != edges.end(); ++i)
+	{
+		neighbours[neighbourRanges[i->x].y++] = make_int2(i->y, i->z);
+		neighbours[neighbourRanges[i->y].y++] = make_int2(i->x, i->z);
+	}
+	
+#ifndef NDEBUG
+	//Verify ranges.
+	assert(neighbourRanges[0].x == 0);
+	
+	for (int i = 0; i < nrVertices - 1; ++i) assert(neighbourRanges[i].y == neighbourRanges[i + 1].x);
+	
+	assert(neighbourRanges[nrVertices - 1].y == static_cast<int>(neighbours.size()));
+#endif
+	
+	setClusterWeights();
+
+#ifndef NDEBUG
+	cerr << "Read a BioGRID TAB2 graph with " << nrVertices << " vertices and " << nrEdges << " edges." << endl;
 #endif
 
 	return in;

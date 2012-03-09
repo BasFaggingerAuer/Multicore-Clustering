@@ -24,4 +24,8 @@ if(SDL_FOUND)
 	cuda_add_executable(visclu visclu.cpp)
 	target_link_libraries(visclu ${CUDA_LIBRARY} ${TBB_LIBRARY} ${Boost_LIBRARIES} ${SDL_LIBRARY})
 	target_link_libraries(visclu cluster)
+	
+	cuda_add_executable(bioclu bioclu.cpp)
+	target_link_libraries(bioclu ${CUDA_LIBRARY} ${TBB_LIBRARY} ${Boost_LIBRARIES} ${SDL_LIBRARY})
+	target_link_libraries(bioclu cluster)
 endif()

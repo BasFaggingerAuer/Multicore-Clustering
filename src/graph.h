@@ -39,6 +39,7 @@ class Graph
 
 		void clear();
 		std::istream &readMETIS(std::istream &);
+		std::istream &readTAB2(std::istream &, const std::string &);
 		std::istream &readCoordinates(std::istream &);
 		std::vector<int> random_shuffle();
 		bool empty() const;

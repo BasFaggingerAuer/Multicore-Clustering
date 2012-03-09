@@ -30,8 +30,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <SDL.h>
 
 #include <boost/program_options.hpp>
-#include <boost/iostreams/filtering_stream.hpp>
-#include <boost/iostreams/filter/bzip2.hpp>
 
 using namespace clu;
 using namespace std;
@@ -77,13 +75,7 @@ class DrawerSDL : public Drawer
 		void drawGraphClustering(const Graph &, const std::vector<int> &);
 		
 	private:
-		void drawLine(int2, int2, const pixel) const;
 		void addSlide();
-		
-		inline int2 convertCoordinate(const float2 &p) const
-		{
-			return make_int2((int)(coordRect.x + 1 + (coordRect.w - 2)*p.x), (int)(coordRect.y + 1 + (coordRect.h - 2)*(1.0f - p.y)));
-		};
 		
 		inline pixel fromHue(const int &c) const
 		{
@@ -101,16 +93,16 @@ class DrawerSDL : public Drawer
 		int curSlide;
 		vector<SDL_Surface *> slides;
 		
-		SDL_Rect origRect, permRect, coordRect;
+		SDL_Rect origRect, permRect;
 };
 
 int main(int argc, char **argv)
 {
-	int drawSize = 400;
+	int drawSize = 512;
 	bool randomiseVertices = false;
 	
+	string experiment = "Negative Genetic";
 	string fileName = "", shortFileName = "";
-	string coordinateFileName = "";
 	string gnuplotFileName = "";
 
 	//Parse command line options.
@@ -120,8 +112,8 @@ int main(int argc, char **argv)
 		
 		desc.add_options()
 		("help,h", "show this help message")
-		("coordinate-data,c", boost::program_options::value<string>(), "specify vertex coordinates")
 		("input-file", boost::program_options::value<string>(), "set graph input file")
+		("experiment,e", boost::program_options::value<string>(), "set BioGRID experiment (e.g. Positive Genetic)")
 		("random,r", "randomise the graph vertex ordering");
 		
 		boost::program_options::positional_options_description pos;
@@ -139,8 +131,8 @@ int main(int argc, char **argv)
 		}
 		
 		if (varMap.count("random")) randomiseVertices = true;
-		if (varMap.count("coordinate-data")) coordinateFileName = varMap["coordinate-data"].as<string>();
 		if (varMap.count("input-file")) fileName = varMap["input-file"].as<string>();
+		if (varMap.count("experiment")) experiment = varMap["experiment"].as<string>();
 		
 		if (fileName == "")
 		{
@@ -161,45 +153,18 @@ int main(int argc, char **argv)
 
 	try
 	{
-		//We are reading a BZIP2 compressed METIS graph.
-		ifstream file(fileName.c_str(), ios_base::binary);
-		boost::iostreams::filtering_istream inStream;
+		//We are reading a BioGRID TAB2 file.
+		ifstream file(fileName.c_str());
 
-		inStream.push(boost::iostreams::bzip2_decompressor());
-		inStream.push(file);
-		graph.readMETIS(inStream);
+		graph.readTAB2(file, experiment);
 		file.close();
 	
 		shortFileName = fileName.substr(1 + fileName.find_last_of("/\\"));
-		shortFileName = shortFileName.substr(0, shortFileName.find(".bz2"));
 	}
 	catch (exception &e)
 	{
 		cerr << "An exception occured when reading " << fileName << " from disk!" << endl;
 		return -1;
-	}
-	
-	//Read coordinate data from file if specified.
-	vector<int2> coordinates;
-	
-	if (coordinateFileName != "")
-	{
-		try
-		{
-			//We are reading a BZIP2 compressed coordinate file.
-			ifstream file(coordinateFileName.c_str(), ios_base::binary);
-			boost::iostreams::filtering_istream inStream;
-
-			inStream.push(boost::iostreams::bzip2_decompressor());
-			inStream.push(file);
-			graph.readCoordinates(inStream);
-			file.close();
-		}
-		catch (exception &e)
-		{
-			cerr << "An exception occured when reading " << coordinateFileName << " from disk!" << endl;
-			return -1;
-		}
 	}
 	
 	//Randomise graph if desired.
@@ -212,7 +177,7 @@ int main(int argc, char **argv)
 		return -1;
 	}
 	
-	SDL_Surface *screen = SDL_SetVideoMode(3*drawSize, 2*drawSize, 24, SDL_SWSURFACE);
+	SDL_Surface *screen = SDL_SetVideoMode(2*drawSize, drawSize, 24, SDL_SWSURFACE);
 	
 	if (!screen)
 	{
@@ -320,9 +285,8 @@ DrawerSDL::DrawerSDL(SDL_Surface *_screen, const int &_size) :
 {
 	assert(screen);
 	
-	coordRect.x = 0; coordRect.y = 0; coordRect.w = 2*size; coordRect.h = 2*size;
-	origRect.x = 2*size; origRect.y = 0; origRect.w = size; origRect.h = size;
-	permRect.x = 2*size; permRect.y = size; permRect.w = size; permRect.h = size;
+	origRect.x = 0; origRect.y = 0; origRect.w = size; origRect.h = size;
+	permRect.x = size; permRect.y = 0; permRect.w = size; permRect.h = size;
 }
 
 DrawerSDL::~DrawerSDL()
@@ -370,122 +334,12 @@ void DrawerSDL::addSlide()
 
 void DrawerSDL::drawGraphCoordinates(const Graph &graph)
 {
-	assert((int)graph.coordinates.size() == graph.nrVertices);
 	
-	//Clear part of the screen.
-	SDL_FillRect(screen, &coordRect, clearColour);
-	
-	SDL_LockSurface(screen);
-	
-	buffer = static_cast<pixel *>(screen->pixels);
-	
-	//Draw graph data as coordinate lines.
-	for (int i = 0; i < graph.nrVertices; ++i)
-	{
-		const int2 indices = graph.neighbourRanges[i];
-		const int2 p0 = convertCoordinate(graph.coordinates[i]);
-		
-		for (int j = indices.x; j < indices.y; ++j)
-		{
-			//Draw line to each neighbour, but avoid drawing the same line twice.
-			const int ni = graph.neighbours[j].x;
-			
-			if (i < ni)
-			{
-				const int2 p1 = convertCoordinate(graph.coordinates[ni]);
-
-#ifdef SAVE_SLIDES				
-				drawLine(p0, p1, pixel(0, 0, 0));
-#else
-				drawLine(p0, p1, pixel(0, 0, 255));
-#endif
-			}
-		}
-	}
-	
-	for (vector<float2>::const_iterator i = graph.coordinates.begin(); i != graph.coordinates.end(); ++i)
-	{
-		const int2 p = convertCoordinate(*i);
-		
-#ifdef SAVE_SLIDES
-		buffer[p.x + pitch*p.y] = pixel(0, 0, 0);
-#else
-		buffer[p.x + pitch*p.y] = pixel(255, 255, 0);
-#endif
-	}
-	
-	SDL_UnlockSurface(screen);
-	SDL_UpdateRect(screen, coordRect.x, coordRect.y, coordRect.w, coordRect.h);
-	
-	addSlide();
 }
 
 void DrawerSDL::drawGraphClustering(const Graph &graph, const vector<int> &cmp)
 {
-	assert((int)graph.coordinates.size() == graph.nrVertices);
-	assert((int)cmp.size() == graph.nrVertices);
 	
-	//Clear part of the screen.
-	SDL_FillRect(screen, &coordRect, clearColour);
-	
-	SDL_LockSurface(screen);
-	
-	buffer = static_cast<pixel *>(screen->pixels);
-	
-	//Draw graph data as coordinate lines.
-	for (int i = 0; i < graph.nrVertices; ++i)
-	{
-		const int2 indices = graph.neighbourRanges[i];
-		const int2 p0 = convertCoordinate(graph.coordinates[i]);
-		const int c0 = cmp[i];
-		
-		for (int j = indices.x; j < indices.y; ++j)
-		{
-			//Draw line to each neighbour, but avoid drawing the same line twice.
-			const int ni = graph.neighbours[j].x;
-			
-			if (i < ni)
-			{
-				const int2 p1 = convertCoordinate(graph.coordinates[ni]);
-				const int c1 = cmp[ni];
-
-#ifdef SAVE_SLIDES
-				if (c0 == c1) drawLine(p0, p1, fromHue(c0));
-#else
-				drawLine(p0, p1, (c0 == c1 ? fromHue(c0) : pixel(255, 255, 255)));
-#endif
-			}
-		}
-	}
-
-#ifdef SAVE_SLIDES
-	//Draw graph data as coordinate lines.
-	for (int i = 0; i < graph.nrVertices; ++i)
-	{
-		const int2 indices = graph.neighbourRanges[i];
-		const int2 p0 = convertCoordinate(graph.coordinates[i]);
-		const int c0 = cmp[i];
-		
-		for (int j = indices.x; j < indices.y; ++j)
-		{
-			//Draw line to each neighbour, but avoid drawing the same line twice.
-			const int ni = graph.neighbours[j].x;
-			
-			if (i < ni)
-			{
-				const int2 p1 = convertCoordinate(graph.coordinates[ni]);
-				const int c1 = cmp[ni];
-
-				if (c0 != c1) drawLine(p0, p1, pixel(0, 0, 0));
-			}
-		}
-	}
-#endif
-	
-	SDL_UnlockSurface(screen);
-	SDL_UpdateRect(screen, coordRect.x, coordRect.y, coordRect.w, coordRect.h);
-	
-	addSlide();
 }
 
 void DrawerSDL::drawGraphMatrix(const Graph &graph)
@@ -497,16 +351,32 @@ void DrawerSDL::drawGraphMatrix(const Graph &graph)
 	
 	buffer = static_cast<pixel *>(screen->pixels);
 	
+	//Find minimum and maximum weight.
+	int minWgt = INT_MAX, maxWgt = INT_MIN;
+	
+	for (vector<int2>::const_iterator i = graph.neighbours.begin(); i != graph.neighbours.end(); ++i)
+	{
+		minWgt = min(minWgt, i->y);
+		maxWgt = max(maxWgt, i->y);
+	}
+
+#ifndef NDEBUG
+	cerr << "Edge weights lie between " << minWgt << " and " << maxWgt << "." << endl;
+#endif
+	
 	//No permutation.
 	for (int i = 0; i < graph.nrVertices; ++i)
 	{
 		const int y = ((long)origRect.h*(long)i)/(long)graph.nrVertices;
-		pixel *cp = &buffer[(y + origRect.y)*pitch];
+		pixel *cp = &buffer[(y + origRect.y)*pitch + origRect.x];
 		const int2 r = graph.neighbourRanges[i];
 		
 		for (int j = r.x; j < r.y; ++j)
 		{
-			cp[(((long)origRect.w*(long)graph.neighbours[j].x)/(long)graph.nrVertices) + origRect.x] = pixel(0, 0, 255);
+			const int2 n = graph.neighbours[j];
+			pixel *dest = &cp[(((long)origRect.w*(long)n.x)/(long)graph.nrVertices)];
+			
+			*dest = pixel(max(dest->r, static_cast<unsigned char>((255*(n.y - minWgt))/maxWgt)), 0, 255);
 		}
 	}
 	
@@ -548,6 +418,15 @@ void DrawerSDL::drawGraphMatrixClustering(const Graph &graph, const vector<int> 
 	
 	buffer = static_cast<pixel *>(screen->pixels);
 	
+	//Find minimum and maximum weight.
+	int minWgt = INT_MAX, maxWgt = INT_MIN;
+	
+	for (vector<int2>::const_iterator i = graph.neighbours.begin(); i != graph.neighbours.end(); ++i)
+	{
+		minWgt = min(minWgt, i->y);
+		maxWgt = max(maxWgt, i->y);
+	}
+
 	//Draw permuted and coloured graph.
 	vector<int> piInv(graph.nrVertices);
 	
@@ -556,118 +435,22 @@ void DrawerSDL::drawGraphMatrixClustering(const Graph &graph, const vector<int> 
 	for (int i = 0; i < graph.nrVertices; ++i)
 	{
 		const int y = ((long)permRect.h*(long)piInv[i])/(long)graph.nrVertices;
-		pixel *cp = &buffer[(y + permRect.y)*pitch];
+		pixel *cp = &buffer[(y + permRect.y)*pitch + permRect.x];
 		const int2 r = graph.neighbourRanges[i];
 		const int c0 = cmp[i];
 		
 		for (int j = r.x; j < r.y; ++j)
 		{
-			const int k = graph.neighbours[j].x;
+			const int2 n = graph.neighbours[j];
+			pixel *dest = &cp[(((long)permRect.w*(long)piInv[n.x])/(long)graph.nrVertices)];
 			
-			cp[(((long)permRect.w*(long)piInv[k])/(long)graph.nrVertices) + permRect.x] = (c0 == cmp[k] ? fromHue(c0) : pixel(255, 255, 255));
+			*dest = pixel(max(dest->r, static_cast<unsigned char>((255*(n.y - minWgt))/maxWgt)), (c0 == cmp[n.x] ? 128 : 0), 255);
 		}
 	}
 	
 	SDL_UnlockSurface(screen);
 	SDL_UpdateRect(screen, permRect.x, permRect.y, permRect.w, permRect.h);
-}
-
-void DrawerSDL::drawLine(int2 p0, int2 p1, const pixel c) const
-{
-	assert(p0.x >= 0 && p0.y >= 0 && p0.x < screen->w && p0.y < screen->h);
-	assert(p1.x >= 0 && p1.y >= 0 && p1.x < screen->w && p1.y < screen->h);
 	
-	//From chapter 36 of Michael Abrash's Black Book of Graphics Programming.
-	int w, h, dx;
-	pixel *cp;
-	
-	if ((h = p1.y - p0.y) < 0)
-	{
-		swap(p0, p1);
-		h = -h;
-	}
-	
-	if ((w = p1.x - p0.x) < 0)
-	{
-		dx = -1;
-		w = -w;
-	}
-	else
-	{
-		dx = 1;
-	}
-	
-	cp = &buffer[pitch*p0.y + p0.x];
-	
-	if (w == 0)
-	{
-		for (int i = h; i-- > 0; cp += pitch) *cp = c;
-	}
-	else if (h == 0)
-	{
-		for (int i = w; i-- > 0; cp += dx) *cp = c;
-	}
-	else if (w == h)
-	{
-		for (int i = h; i-- > 0; cp += pitch + dx) *cp = c;
-	}
-	else if (w >= h)
-	{
-		const int step = w/h, up = (w % h) << 1, down = h << 1;
-		int error = (w % h) - (h << 1);
-		
-		if (step & 1) error += h;
-		
-		//Initial run.
-		for (int i = 1 + (step >> 1); i-- > 0; cp += dx) *cp = c;
-		
-		cp += pitch;
-		
-		for (int i = h - 1; i-- > 0; cp += pitch)
-		{
-			if ((error += up) > 0)
-			{
-				error -= down;
-				
-				for (int j = step + 1; j-- > 0; cp += dx) *cp = c;
-			}
-			else
-			{
-				for (int j = step; j-- > 0; cp += dx) *cp = c;
-			}
-		}
-		
-		//Final run.
-		for (int i = (step >> 1) + (up == 0 && !(step & 1) ? 1 : 0); i-- > 0; cp += dx) *cp = c;
-	}
-	else
-	{
-		const int step = h/w, up = (h % w) << 1, down = w << 1;
-		int error = (h % w) - (w << 1);
-		
-		if (step & 1) error += w;
-		
-		//Initial run.
-		for (int i = 1 + (step >> 1); i-- > 0; cp += pitch) *cp = c;
-		
-		cp += dx;
-		
-		for (int i = w - 1; i-- > 0; cp += dx)
-		{
-			if ((error += up) > 0)
-			{
-				error -= down;
-				
-				for (int j = step + 1; j-- > 0; cp += pitch) *cp = c;
-			}
-			else
-			{
-				for (int j = step; j-- > 0; cp += pitch) *cp = c;
-			}
-		}
-		
-		//Final run.
-		for (int i = (step >> 1) + (up == 0 && !(step & 1) ? 1 : 0); i-- > 0; cp += pitch) *cp = c;
-	}
+	addSlide();
 }
 

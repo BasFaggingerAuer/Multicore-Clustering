@@ -31,8 +31,7 @@ class Drawer
 		virtual ~Drawer();
 		
 		virtual void drawGraphMatrix(const Graph &) = 0;
-		virtual void drawGraphMatrixPermuted(const Graph &, const std::vector<int> &) = 0;
-		virtual void drawGraphMatrixPermutedClustering(const Graph &, const std::vector<int> &, const std::vector<int> &) = 0;
+		virtual void drawGraphMatrixClustering(const Graph &, const std::vector<int> &) = 0;
 		virtual void drawGraphCoordinates(const Graph &) = 0;
 		virtual void drawGraphClustering(const Graph &, const std::vector<int> &) = 0;
 };

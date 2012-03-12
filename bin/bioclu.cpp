@@ -20,6 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <exception>
 
 #include <graph.h>
+#include <biograph.h>
 #include <vis.h>
 #include <cluster.h>
 #include <clustertbb.h>
@@ -96,10 +97,21 @@ class DrawerSDL : public Drawer
 		SDL_Rect origRect, permRect;
 };
 
+class ScoreGaussian
+{
+	public:
+		ScoreGaussian(const double &sigma) : factor(1.0/(sigma*sigma)) {};
+		~ScoreGaussian() {};
+		
+		int operator () (const double &score) const {return 1 + static_cast<int>(ceil(2048.0*exp(factor*(fabs(score) - 1.0))));};
+		
+	private:
+		const double factor;
+};
+
 int main(int argc, char **argv)
 {
 	int drawSize = 512;
-	bool randomiseVertices = false;
 	
 	string experiment = "Negative Genetic";
 	string fileName = "", shortFileName = "";
@@ -113,8 +125,7 @@ int main(int argc, char **argv)
 		desc.add_options()
 		("help,h", "show this help message")
 		("input-file", boost::program_options::value<string>(), "set graph input file")
-		("experiment,e", boost::program_options::value<string>(), "set BioGRID experiment (e.g. Positive Genetic)")
-		("random,r", "randomise the graph vertex ordering");
+		("experiment,e", boost::program_options::value<string>(), "set BioGRID experiment (e.g. Positive Genetic)");
 		
 		boost::program_options::positional_options_description pos;
 		
@@ -130,7 +141,6 @@ int main(int argc, char **argv)
 			return 1;
 		}
 		
-		if (varMap.count("random")) randomiseVertices = true;
 		if (varMap.count("input-file")) fileName = varMap["input-file"].as<string>();
 		if (varMap.count("experiment")) experiment = varMap["experiment"].as<string>();
 		
@@ -149,14 +159,14 @@ int main(int argc, char **argv)
 	cerr << "Creating clustering of '" << fileName << "'..." << endl;
 
 	//Read graph from disk.
-	Graph graph;
+	BioGraph bioGraph;
 
 	try
 	{
 		//We are reading a BioGRID TAB2 file.
 		ifstream file(fileName.c_str());
 
-		graph.readTAB2(file, experiment);
+		bioGraph.readTAB2(file, experiment);
 		file.close();
 	
 		shortFileName = fileName.substr(1 + fileName.find_last_of("/\\"));
@@ -166,9 +176,6 @@ int main(int argc, char **argv)
 		cerr << "An exception occured when reading " << fileName << " from disk!" << endl;
 		return -1;
 	}
-	
-	//Randomise graph if desired.
-	if (randomiseVertices) graph.random_shuffle();
 	
 	//Start SDL to display the results.
 	if (SDL_Init(SDL_INIT_VIDEO) != 0)
@@ -193,8 +200,8 @@ int main(int argc, char **argv)
 	//Create graph drawer.
 	DrawerSDL drawer(screen, drawSize);
 	
-	drawer.drawGraphMatrix(graph);
-	drawer.drawGraphCoordinates(graph);
+	//Create clusterer.
+	Cluster *cluster = new ClusterTBB();
 	
 	//Enter main loop.
 	bool running = true;
@@ -228,6 +235,10 @@ int main(int argc, char **argv)
 				{
 					quality = k - (int)('1');
 				}
+				else if (k == '0')
+				{
+					quality = 10;
+				}
 			}
 			
 			if (event.type == SDL_QUIT)
@@ -236,24 +247,22 @@ int main(int argc, char **argv)
 			}
 		}
 		
-		if (quality >= 0)
+		if (quality >= 0 && quality < 10)
 		{
 			//Start clustering.
 			try
 			{
-				Cluster *cluster = 0;
+				//Convert to ordinary graph.
+				Graph graph;
 				
-				if (quality == 1) cluster = new ClusterTBB();
-				else if (quality == 2) cluster = new ClusterCUDA();
+				bioGraph.convert(graph, ScoreGaussian(0.05 + static_cast<double>(quality)/16.0));
 				
-				if (cluster)
-				{
-					vector<int> component = cluster->cluster(graph, 1.0, &drawer);
-					
-					cout << "Generated clustering with modularity " << Cluster::modularity(graph, component) << "." << endl;
-					
-					delete cluster;
-				}
+				vector<int> component = cluster->cluster(graph, 1.0, 0);
+	
+				drawer.drawGraphMatrix(graph);
+				drawer.drawGraphMatrixClustering(graph, component);
+				
+				cout << "Generated clustering with modularity " << Cluster::modularity(graph, component) << "." << endl;
 			}
 			catch (exception &e)
 			{
@@ -262,10 +271,51 @@ int main(int argc, char **argv)
 			
 			SDL_Flip(screen);
 		}
+		else if (quality == 10)
+		{
+			//Find best clustering.
+			Graph graph;
+			double bestModularity = -1.0;
+			double bestSigma = 0.0;
+			vector<int> bestClustering(bioGraph.vertices.size(), 0);
+			
+			for (double sigma = 0.05; sigma <= 0.50; sigma += 0.001)
+			{
+				bioGraph.convert(graph, ScoreGaussian(sigma));
+				
+				const vector<int> clustering = cluster->cluster(graph, 1.0, 0);
+				const double modularity = Cluster::modularity(graph, clustering);
+				
+				if (modularity > bestModularity)
+				{
+					bestModularity = modularity;
+					bestSigma = sigma;
+					bestClustering = clustering;
+					
+					cout << "Found modularity " << bestModularity << " clustering at sigma " << bestSigma << "." << endl;
+					drawer.drawGraphMatrixClustering(graph, bestClustering);
+					SDL_Flip(screen);
+				}
+				
+				SDL_Delay(25);
+			}
+			
+			//Export related genes.
+			const int nrClusters = *max_element(bestClustering.begin(), bestClustering.end()) + 1;
+			vector<string> clusterMembers(nrClusters, "");
+			
+			cout << "For modularity " << bestModularity << " and sigma " << bestSigma << ", we found " << nrClusters << " clusters:" << endl;
+			
+			for (int i = 0; i < static_cast<int>(bioGraph.vertices.size()); ++i) clusterMembers[bestClustering[i]] += bioGraph.vertices[i] + ", ";
+			for (int i = 0; i < nrClusters; ++i) cout << "Cluster " << i + 1 << ":" << endl << clusterMembers[i] << endl;
+		}
 		
 		SDL_Delay(25);
 	}
 	
+	//Free data.
+	delete cluster;
+
 	SDL_Quit();
 
 	return 0;

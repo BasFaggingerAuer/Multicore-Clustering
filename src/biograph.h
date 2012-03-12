@@ -52,14 +52,17 @@ class BioGraph
 		{
 			//Convert edges to neighbour arrays.
 			g.clear();
+			
+			if (vertices.empty() || edges.empty()) return;
+			
 			g.nrVertices = static_cast<int>(vertices.size());
 			g.nrEdges = static_cast<int>(edges.size());
 			g.neighbourRanges.assign(g.nrVertices, make_int2(0, 0));
 			g.vertexWeights.assign(g.nrVertices, 0);
 			g.neighbours.assign(2*g.nrEdges, make_int2(0, 0));
-		#ifndef LEAN
+#ifndef LEAN
 			g.coordinates.assign(g.nrVertices, make_float2(0.0, 0.0));
-		#endif
+#endif
 			
 			for (std::vector<BioEdge>::const_iterator i = edges.begin(); i != edges.end(); ++i)
 			{
@@ -82,14 +85,14 @@ class BioGraph
 				g.neighbours[g.neighbourRanges[i->y].y++] = make_int2(i->x, score);
 			}
 			
-		#ifndef NDEBUG
+#ifndef NDEBUG
 			//Verify ranges.
 			assert(g.neighbourRanges[0].x == 0);
 			
 			for (int i = 0; i < g.nrVertices - 1; ++i) assert(g.neighbourRanges[i].y == g.neighbourRanges[i + 1].x);
 			
 			assert(g.neighbourRanges[g.nrVertices - 1].y == static_cast<int>(g.neighbours.size()));
-		#endif
+#endif
 			
 			g.setClusterWeights();
 		};

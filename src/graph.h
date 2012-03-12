@@ -32,14 +32,8 @@ class Graph
 		Graph();
 		~Graph();
 		
-		static Graph createStarGraph(const int &);
-		static Graph createTreeGraph(const int &, const int &);
-		static Graph createGridGraph(const int &, const int &);
-		static Graph createLineGraph(const int &);
-
 		void clear();
 		std::istream &readMETIS(std::istream &);
-		std::istream &readTAB2(std::istream &, const std::string &);
 		std::istream &readCoordinates(std::istream &);
 		std::vector<int> random_shuffle();
 		bool empty() const;
@@ -54,6 +48,8 @@ class Graph
 		long Omega;
 		
 	private:
+		friend class BioGraph;
+		
 		void setClusterWeights();
 };
 

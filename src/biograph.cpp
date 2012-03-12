@@ -122,6 +122,7 @@ istream &BioGraph::readTAB2(istream &in, const string &experiment)
 		}
 		
 		edges.push_back(BioEdge(identifiers[u], identifiers[v], atof(words[18].c_str())));
+		//cout << vertices[identifiers[u]] << " -- " << vertices[identifiers[v]] << ": " << atof(words[18].c_str()) << endl;
 	}
 	
 	assert(nrVertices == static_cast<int>(vertices.size()));

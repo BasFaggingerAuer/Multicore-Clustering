@@ -117,7 +117,9 @@ istream &Graph::readMETIS(istream &in)
 	//Resize graph arrays.
 	neighbourRanges.assign(nrVertices, make_int2(0, 0));
 	neighbours.reserve(nrEdges);
+#ifndef LEAN
 	coordinates.assign(nrVertices, make_float2(0.0, 0.0));
+#endif
 
 	if (nrVertexWeights > 1) cerr << "Warning: we only record the first vertex weight instead of all " << nrVertexWeights << "!" << endl;
 	if (weightedVertices || nrVertexWeights > 0) cerr << "Warning: for clustering all vertex weights are discarded!" << endl;
@@ -347,11 +349,12 @@ void Graph::setClusterWeights()
 		vertexWeights[i] = w;
 	}
 	
+	assert(Omega > 0);
 	assert((Omega & 1) == 0);
 	Omega /= 2;
 
 #ifndef NDEBUG
-	cerr << "Set " << nrVertices << " clustering vertex weights." << endl;
+	cerr << "Set " << nrVertices << " clustering vertex weights with Omega " << Omega << "." << endl;
 #endif
 }
 

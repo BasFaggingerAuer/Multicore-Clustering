@@ -377,7 +377,7 @@ vector<int> GraphMatchingTBB::match(const Graph &graph) const
 class MarkSatellites
 {
 	public:
-		MarkSatellites(int * const, const int * const, const int &, const long &, const int2 * const, const int2 * const);
+		MarkSatellites(int * const, const int * const, const int &, const int2 * const, const int2 * const);
 		~MarkSatellites();
 		
 		void operator () (const blocked_range<int> &) const;
@@ -386,19 +386,17 @@ class MarkSatellites
 		int * const marks;
 		const int * const match;
 		const int nrVertices;
-		const long twoOmega;
 		const int2 * const neighbourRanges;
 		const int2 * const neighbours;
 };
 
 MarkSatellites::MarkSatellites(int * const _marks, const int * const _match,
-			const int &_nrVertices, const long &_Omega,
+			const int &_nrVertices,
 			const int2 * const _neighbourRanges,
 			const int2 * const _neighbours) :
 	marks(_marks),
 	match(_match),
 	nrVertices(_nrVertices),
-	twoOmega(2L*_Omega),
 	neighbourRanges(_neighbourRanges),
 	neighbours(_neighbours)
 {
@@ -517,7 +515,7 @@ void GraphMatchingTBB::matchSatellites(vector<int> &mu, const Graph &graph) cons
 	assert((int)mu.size() == graph.nrVertices);
 	
 	vector<int> marks(mu.size());
-	MarkSatellites marker(&marks[0], &mu[0], graph.nrVertices, graph.Omega, &graph.neighbourRanges[0], &graph.neighbours[0]);
+	MarkSatellites marker(&marks[0], &mu[0], graph.nrVertices, &graph.neighbourRanges[0], &graph.neighbours[0]);
 	MatchSatellites matcher(&mu[0], &marks[0], graph.nrVertices, graph.Omega, (onlyImprove ? 0 : -graph.Omega*graph.Omega), &graph.neighbourRanges[0], &graph.vertexWeights[0], &graph.neighbours[0]);
 	const blocked_range<int> range(0, graph.nrVertices);
 	

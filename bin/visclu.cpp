@@ -531,6 +531,7 @@ class SortByPart
 
 void DrawerSDL::drawGraphMatrixClustering(const Graph &graph, const vector<int> &cmp)
 {
+	return;
 	assert((int)cmp.size() == graph.nrVertices);
 	
 	//Draw clustered graph matrix.

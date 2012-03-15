@@ -66,6 +66,7 @@ class BioGraph
 			
 			for (std::vector<BioEdge>::const_iterator i = edges.begin(); i != edges.end(); ++i)
 			{
+				assert(i->x >= 0 && i->x < g.nrVertices && i->y >= 0 && i->y < g.nrVertices);
 				g.neighbourRanges[i->x].y++;
 				g.neighbourRanges[i->y].y++;
 			}
@@ -81,6 +82,8 @@ class BioGraph
 			{
 				const int score = conv(i->score);
 				
+				assert(score > 0);
+				
 				g.neighbours[g.neighbourRanges[i->x].y++] = make_int2(i->y, score);
 				g.neighbours[g.neighbourRanges[i->y].y++] = make_int2(i->x, score);
 			}
@@ -95,6 +98,10 @@ class BioGraph
 #endif
 			
 			g.setClusterWeights();
+			
+#ifndef NDEBUG
+			std::cerr << "Created a graph with " << g.nrVertices << " vertices and " << g.nrEdges << " edges from biological data." << std::endl;
+#endif
 		};
 		
 		std::vector<std::string> vertices;

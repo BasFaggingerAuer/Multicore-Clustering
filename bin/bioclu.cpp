@@ -100,10 +100,19 @@ class DrawerSDL : public Drawer
 class ScoreGaussian
 {
 	public:
-		ScoreGaussian(const double &sigma) : factor(1.0/(sigma*sigma)) {};
+		ScoreGaussian(const double &sigma) :
+//			factor(1.0/(sigma*sigma))
+			factor(sigma)
+		{
+			
+		};
 		~ScoreGaussian() {};
 		
-		int operator () (const double &score) const {return 1 + static_cast<int>(ceil(2048.0*exp(factor*(fabs(score) - 1.0))));};
+		int operator () (const double &score) const
+		{
+			//return 1 + static_cast<int>(ceil(1024.0*exp(factor*(min(fabs(score), 1.0) - 1.0))));
+			return (fabs(score) >= factor ? 128 : 1);
+		};
 		
 	private:
 		const double factor;
@@ -279,7 +288,7 @@ int main(int argc, char **argv)
 			double bestSigma = 0.0;
 			vector<int> bestClustering(bioGraph.vertices.size(), 0);
 			
-			for (double sigma = 0.05; sigma <= 0.50; sigma += 0.001)
+			for (double sigma = 0.1; sigma <= 1.0; sigma += 0.01)
 			{
 				bioGraph.convert(graph, ScoreGaussian(sigma));
 				

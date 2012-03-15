@@ -160,8 +160,8 @@ class SumNeighbourRanges
 class CopyNeighbours
 {
 	public:
-		CopyNeighbours(const vector<int2>::iterator &_neighbours, const vector<int>::const_iterator &_sigma, const vector<int>::const_iterator _kappaInv, const vector<int>::const_iterator &_permute, const vector<int2>::const_iterator &_fineRanges, const vector<int2>::const_iterator &_fineNeighbours) :
-			neighbours(_neighbours), sigma(_sigma), kappaInv(_kappaInv), permute(_permute), fineRanges(_fineRanges), fineNeighbours(_fineNeighbours)
+		CopyNeighbours(const vector<int2>::iterator &_neighbours, const vector<int>::const_iterator &_sigma, const vector<int>::const_iterator &_kappa, const vector<int>::const_iterator &_kappaInv, const vector<int>::const_iterator &_permute, const vector<int2>::const_iterator &_fineRanges, const vector<int2>::const_iterator &_fineNeighbours) :
+			neighbours(_neighbours), sigma(_sigma), kappa(_kappa), kappaInv(_kappaInv), permute(_permute), fineRanges(_fineRanges), fineNeighbours(_fineNeighbours)
 		{};
 		
 		~CopyNeighbours() {};
@@ -175,42 +175,14 @@ class CopyNeighbours
 				
 				for (int j = ki.x; j < ki.y; ++j)
 				{
-					const int2 ni = fineRanges[permute[j]];
+					const int2 r = fineRanges[permute[j]];
 					
-					for (int k = ni.x; k < ni.y; ++k) neighbours[count++] = fineNeighbours[k];
-				}
-			}
-		};
-		
-	private:
-		vector<int2>::iterator neighbours;
-		vector<int>::const_iterator sigma;
-		vector<int>::const_iterator kappaInv;
-		vector<int>::const_iterator permute;
-		vector<int2>::const_iterator fineRanges;
-		vector<int2>::const_iterator fineNeighbours;
-};
-
-class ProjectNeighbours
-{
-	public:
-		ProjectNeighbours(const vector<int2>::iterator &_neighbours, const vector<int>::const_iterator &_sigma, const vector<int>::const_iterator _kappa) :
-			neighbours(_neighbours), sigma(_sigma), kappa(_kappa)
-		{};
-		
-		~ProjectNeighbours() {};
-		
-		void operator () (const blocked_range<size_t> &r) const
-		{
-			for (size_t i = r.begin(); i != r.end(); ++i)
-			{
-				const int2 si = make_int2(sigma[i], sigma[i + 1]);
-				
-				for (int j = si.x; j < si.y; ++j)
-				{
-					const int2 ni = neighbours[j];
-					
-					neighbours[j] = make_int2(kappa[ni.x], ni.y);
+					for (int k = r.x; k < r.y; ++k)
+					{
+						const int2 ni = fineNeighbours[k];
+						
+						neighbours[count++] = make_int2(kappa[ni.x], ni.y);
+					}
 				}
 			}
 		};
@@ -219,6 +191,10 @@ class ProjectNeighbours
 		vector<int2>::iterator neighbours;
 		vector<int>::const_iterator sigma;
 		vector<int>::const_iterator kappa;
+		vector<int>::const_iterator kappaInv;
+		vector<int>::const_iterator permute;
+		vector<int2>::const_iterator fineRanges;
+		vector<int2>::const_iterator fineNeighbours;
 };
 
 class CompressNeighbours
@@ -410,10 +386,8 @@ CoarsenedGraph GraphCoarseningTBB::coarsen(const Graph &fine, const vector<int> 
 	//Turn the inclusive scan into an exclusive scan.
 	sigma.insert(sigma.begin(), 0);
 	c.graph.neighbours.resize(sigma[c.graph.nrVertices]);
-	//Copy all neighbours.
-	parallel_for(blocked_range<size_t>(0, c.graph.nrVertices), CopyNeighbours(c.graph.neighbours.begin(), sigma.begin(), kappaInv.begin(), permute.begin(), fine.neighbourRanges.begin(), fine.neighbours.begin()));
-	//Apply kappa to all neighbours.
-	parallel_for(blocked_range<size_t>(0, c.graph.nrVertices), ProjectNeighbours(c.graph.neighbours.begin(), sigma.begin(), c.kappa.begin()));
+	//Copy all neighbours and apply kappa.
+	parallel_for(blocked_range<size_t>(0, c.graph.nrVertices), CopyNeighbours(c.graph.neighbours.begin(), sigma.begin(), c.kappa.begin(), kappaInv.begin(), permute.begin(), fine.neighbourRanges.begin(), fine.neighbours.begin()));
 	//Compress neighbour list.
 	parallel_for(blocked_range<size_t>(0, c.graph.nrVertices), CompressNeighbours(c.graph.neighbourRanges.begin(), c.graph.neighbours.begin(), sigma.begin()));
 	

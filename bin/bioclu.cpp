@@ -31,9 +31,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <SDL.h>
 
 #include <boost/program_options.hpp>
+#include <boost/iostreams/filtering_stream.hpp>
+#include <boost/iostreams/filter/gzip.hpp>
 
-using namespace clu;
 using namespace std;
+using namespace clu;
+using namespace boost;
 
 class pixel
 {
@@ -87,9 +90,9 @@ class DrawerSDL : public Drawer
 		
 		SDL_Surface * const screen;
 		const int size;
-		pixel *buffer;
 		const int pitch;
 		const unsigned int clearColour;
+		vector<int> heatMap;
 		
 		int curSlide;
 		vector<SDL_Surface *> slides;
@@ -97,52 +100,96 @@ class DrawerSDL : public Drawer
 		SDL_Rect origRect, permRect;
 };
 
-class ScoreGaussian
+//Different available scoring functions for the graph edges.
+class ScoreFunction
 {
 	public:
-		ScoreGaussian(const double &sigma) :
-//			factor(1.0/(sigma*sigma))
-			factor(sigma)
+		ScoreFunction(const string &_name) : name(_name), t(0.5) {};
+		virtual ~ScoreFunction() {};
+		
+		void parameter(const double &_t)
 		{
-			
+			assert(_t >= 0.0 && _t <= 1.0);
+			t = _t;
 		};
+		
+		virtual int operator () (const double &) const = 0;
+		
+	public:
+		const string name;
+		
+	protected:
+		double t;
+};
+
+class ScoreThreshold : public ScoreFunction
+{
+	public:
+		ScoreThreshold() : ScoreFunction("threshold") {};
+		~ScoreThreshold() {};
+		
+		int operator () (const double &score) const
+		{
+			return (fabs(score) >= t ? 1 : 0);
+		};
+};
+
+class ScorePower : public ScoreFunction
+{
+	public:
+		ScorePower() : ScoreFunction("power") {};
+		~ScorePower() {};
+		
+		int operator () (const double &score) const
+		{
+			return 1 + static_cast<int>(floor(256.0*pow(fabs(score), 4.0*t)));
+		};
+};
+
+class ScoreGaussian : public ScoreFunction
+{
+	public:
+		ScoreGaussian() : ScoreFunction("Gaussian") {};
 		~ScoreGaussian() {};
 		
 		int operator () (const double &score) const
 		{
-			//return 1 + static_cast<int>(ceil(1024.0*exp(factor*(min(fabs(score), 1.0) - 1.0))));
-			return (fabs(score) >= factor ? 128 : 1);
+			const double sigma = 0.55 - 0.5*t;
+			return 1 + static_cast<int>(floor(256.0*exp((min(fabs(score), 1.0) - 1.0)/(sigma*sigma))));
 		};
-		
-	private:
-		const double factor;
 };
 
 int main(int argc, char **argv)
 {
 	int drawSize = 512;
+	int scoreMode = 0;
 	
 	string experiment = "Negative Genetic";
-	string fileName = "", shortFileName = "";
+	double minCorr = 0.5;
+	string geneOntologyFileName = "";
+	string fileName = "";
 	string gnuplotFileName = "";
 
 	//Parse command line options.
 	try
 	{
-		boost::program_options::options_description desc("Options");
+		program_options::options_description desc("Options");
 		
 		desc.add_options()
 		("help,h", "show this help message")
-		("input-file", boost::program_options::value<string>(), "set graph input file")
-		("experiment,e", boost::program_options::value<string>(), "set BioGRID experiment (e.g. Positive Genetic)");
+		("input-file", program_options::value<string>(), "set graph input file")
+		("experiment,e", program_options::value<string>(), "set BioGRID experiment (e.g. Positive Genetic)")
+		("corr,c", program_options::value<double>(), "set minimum correlation")
+		("ontology,o", program_options::value<string>(), "read Gene Ontology data")
+		("score,s", program_options::value<int>(), "set score mode (0 = treshhold, 1 = power, 2 = Gaussian)");
 		
-		boost::program_options::positional_options_description pos;
+		program_options::positional_options_description pos;
 		
 		pos.add("input-file", -1);
 		
-		boost::program_options::variables_map varMap;
-		boost::program_options::store(boost::program_options::command_line_parser(argc, argv).options(desc).positional(pos).run(), varMap);
-		boost::program_options::notify(varMap);
+		program_options::variables_map varMap;
+		program_options::store(program_options::command_line_parser(argc, argv).options(desc).positional(pos).run(), varMap);
+		program_options::notify(varMap);
 		
 		if (varMap.count("help"))
 		{
@@ -151,15 +198,18 @@ int main(int argc, char **argv)
 		}
 		
 		if (varMap.count("input-file")) fileName = varMap["input-file"].as<string>();
+		if (varMap.count("ontology")) geneOntologyFileName = varMap["ontology"].as<string>();
 		if (varMap.count("experiment")) experiment = varMap["experiment"].as<string>();
+		if (varMap.count("corr")) minCorr = varMap["corr"].as<double>();
+		if (varMap.count("score")) scoreMode = varMap["score"].as<int>();
 		
 		if (fileName == "")
 		{
 			cerr << "You have to specify an input file!" << endl;
-			throw exception();
+			throw std::exception();
 		}
 	}
-	catch (exception &e)
+	catch (std::exception &e)
 	{
 		cerr << "Invalid command line arguments!" << endl;
 		return -1;
@@ -172,18 +222,60 @@ int main(int argc, char **argv)
 
 	try
 	{
-		//We are reading a BioGRID TAB2 file.
-		ifstream file(fileName.c_str());
+		if (fileName.find(".tab2.txt") != string::npos)
+		{
+			//We are reading a BioGRID TAB2 file.
+			ifstream file(fileName.c_str());
 
-		bioGraph.readTAB2(file, experiment);
-		file.close();
-	
-		shortFileName = fileName.substr(1 + fileName.find_last_of("/\\"));
+			bioGraph.readTAB2(file, experiment);
+			file.close();
+		}
+		else if (fileName.find(".txt.gz") != string::npos)
+		{
+			//We are reading a compressed RAW file.
+			ifstream file(fileName.c_str(), ios_base::binary);
+			iostreams::filtering_istream inStream;
+
+			inStream.push(iostreams::gzip_decompressor());
+			inStream.push(file);
+			bioGraph.readRAW(inStream, minCorr);
+			file.close();
+		}
+		else
+		{
+			//We are reading an uncompressed RAW file.
+			ifstream file(fileName.c_str());
+
+			bioGraph.readRAW(file, minCorr);
+			file.close();
+		}
 	}
-	catch (exception &e)
+	catch (std::exception &e)
 	{
-		cerr << "An exception occured when reading " << fileName << " from disk!" << endl;
+		cerr << "An std::exception occured when reading '" << fileName << "' from disk!" << endl;
 		return -1;
+	}
+	
+	//Read ontology if desired.
+	GeneOntology ontology;
+	
+	if (!geneOntologyFileName.empty())
+	{
+		try
+		{
+			ifstream file(geneOntologyFileName.c_str(), ios_base::binary);
+			iostreams::filtering_istream inStream;
+
+			inStream.push(iostreams::gzip_decompressor());
+			inStream.push(file);
+			ontology.readGene2go(inStream);
+			file.close();
+		}
+		catch (std::exception &e)
+		{
+			cerr << "An std::exception occured when reading '" << fileName << "' from disk!" << endl;
+			return -1;
+		}
 	}
 	
 	//Start SDL to display the results.
@@ -211,6 +303,15 @@ int main(int argc, char **argv)
 	
 	//Create clusterer.
 	Cluster *cluster = new ClusterTBB();
+	
+	//Create score function.
+	ScoreFunction *score;
+	
+	if (scoreMode == 1) score = new ScorePower();
+	else if (scoreMode == 2) score = new ScoreGaussian();
+	else score = new ScoreThreshold();
+	
+	cerr << "Using " << score->name << " score mode (" << scoreMode << "), experiment '" << experiment << "', and minimum correlation " << minCorr << " ..." << endl;
 	
 	//Enter main loop.
 	bool running = true;
@@ -264,18 +365,21 @@ int main(int argc, char **argv)
 				//Convert to ordinary graph.
 				Graph graph;
 				
-				bioGraph.convert(graph, ScoreGaussian(0.05 + static_cast<double>(quality)/16.0));
+				score->parameter(static_cast<double>(quality)/9.0);
+				bioGraph.convert(graph, *score);
 				
 				vector<int> component = cluster->cluster(graph, 1.0, 0);
 	
 				drawer.drawGraphMatrix(graph);
 				drawer.drawGraphMatrixClustering(graph, component);
 				
-				cout << "Generated clustering with modularity " << Cluster::modularity(graph, component) << "." << endl;
+				cerr << "Generated clustering with modularity " << Cluster::modularity(graph, component) << "." << endl;
+			
+				if (!ontology.genes.empty()) ontology.clusterOntology(cout, bioGraph, component);
 			}
-			catch (exception &e)
+			catch (std::exception &e)
 			{
-				cout << "Unable to generate clustering!" << endl;
+				cerr << "Unable to generate clustering!" << endl;
 			}
 			
 			SDL_Flip(screen);
@@ -288,41 +392,47 @@ int main(int argc, char **argv)
 			double bestSigma = 0.0;
 			vector<int> bestClustering(bioGraph.vertices.size(), 0);
 			
-			for (double sigma = 0.1; sigma <= 1.0; sigma += 0.01)
+			for (double sigma = 0.0; sigma <= 1.0; sigma += 0.01)
 			{
-				bioGraph.convert(graph, ScoreGaussian(sigma));
+				score->parameter(sigma);
+				bioGraph.convert(graph, *score);
 				
-				const vector<int> clustering = cluster->cluster(graph, 1.0, 0);
-				const double modularity = Cluster::modularity(graph, clustering);
+				//There should not be any isolated vertices.
+				bool isolated = false;
 				
-				if (modularity > bestModularity)
+				for (vector<int2>::const_iterator i = graph.neighbourRanges.begin(); i != graph.neighbourRanges.end() && !isolated; ++i) if (i->x >= i->y) isolated = true;
+				
+				if (!isolated)
 				{
-					bestModularity = modularity;
-					bestSigma = sigma;
-					bestClustering = clustering;
+					const vector<int> clustering = cluster->cluster(graph, 1.0, 0);
+					const double modularity = Cluster::modularity(graph, clustering);
 					
-					cout << "Found modularity " << bestModularity << " clustering at sigma " << bestSigma << "." << endl;
-					drawer.drawGraphMatrixClustering(graph, bestClustering);
-					SDL_Flip(screen);
+					if (modularity > bestModularity)
+					{
+						bestModularity = modularity;
+						bestSigma = sigma;
+						bestClustering = clustering;
+						
+						cerr << "Found modularity " << bestModularity << " clustering at sigma " << bestSigma << "." << endl;
+						drawer.drawGraphMatrix(graph);
+						drawer.drawGraphMatrixClustering(graph, bestClustering);
+						SDL_Flip(screen);
+						SDL_Delay(10);
+					}
 				}
-				
-				SDL_Delay(25);
 			}
 			
 			//Export related genes.
-			const int nrClusters = *max_element(bestClustering.begin(), bestClustering.end()) + 1;
-			vector<string> clusterMembers(nrClusters, "");
+			if (!ontology.genes.empty()) ontology.clusterOntology(cout, bioGraph, bestClustering);
 			
-			cout << "For modularity " << bestModularity << " and sigma " << bestSigma << ", we found " << nrClusters << " clusters:" << endl;
-			
-			for (int i = 0; i < static_cast<int>(bioGraph.vertices.size()); ++i) clusterMembers[bestClustering[i]] += bioGraph.vertices[i] + ", ";
-			for (int i = 0; i < nrClusters; ++i) cout << "Cluster " << i + 1 << ":" << endl << clusterMembers[i] << endl;
+			cerr << "Done." << endl;
 		}
 		
 		SDL_Delay(25);
 	}
 	
 	//Free data.
+	delete score;
 	delete cluster;
 
 	SDL_Quit();
@@ -340,6 +450,7 @@ DrawerSDL::DrawerSDL(SDL_Surface *_screen, const int &_size) :
 #else
 	clearColour(0x00000000),
 #endif
+	heatMap(size*size, 0),
 	curSlide(0)
 {
 	assert(screen);
@@ -403,40 +514,52 @@ void DrawerSDL::drawGraphClustering(const Graph &graph, const vector<int> &cmp)
 
 void DrawerSDL::drawGraphMatrix(const Graph &graph)
 {
-	//Clear part of the screen.
-	SDL_FillRect(screen, &origRect, clearColour);
-	
-	SDL_LockSurface(screen);
-	
-	buffer = static_cast<pixel *>(screen->pixels);
-	
-	//Find minimum and maximum weight.
-	int minWgt = INT_MAX, maxWgt = INT_MIN;
-	
-	for (vector<int2>::const_iterator i = graph.neighbours.begin(); i != graph.neighbours.end(); ++i)
-	{
-		minWgt = min(minWgt, i->y);
-		maxWgt = max(maxWgt, i->y);
-	}
+	//Clear heatmap.
+	heatMap.assign(size*size, 0);
 
-#ifndef NDEBUG
-	cerr << "Edge weights lie between " << minWgt << " and " << maxWgt << "." << endl;
-#endif
-	
-	//No permutation.
 	for (int i = 0; i < graph.nrVertices; ++i)
 	{
-		const int y = ((long)origRect.h*(long)i)/(long)graph.nrVertices;
-		pixel *cp = &buffer[(y + origRect.y)*pitch + origRect.x];
+		const int y = ((long)size*(long)i)/(long)graph.nrVertices;
+		int *row = &heatMap[y*size];
 		const int2 r = graph.neighbourRanges[i];
 		
 		for (int j = r.x; j < r.y; ++j)
 		{
 			const int2 n = graph.neighbours[j];
-			pixel *dest = &cp[(((long)origRect.w*(long)n.x)/(long)graph.nrVertices)];
 			
-			*dest = pixel(max(dest->r, static_cast<unsigned char>((255*(n.y - minWgt))/maxWgt)), 0, 255);
+			row[(((long)size*(long)n.x)/(long)graph.nrVertices)] += n.y;
 		}
+	}
+	
+	//Determine minimum and maximum.
+	const long minHeat = *min_element(heatMap.begin(), heatMap.end()), maxHeat = *max_element(heatMap.begin(), heatMap.end());
+	
+	//Clear part of the screen.
+	SDL_FillRect(screen, &origRect, clearColour);
+	
+	SDL_LockSurface(screen);
+	
+	pixel *destRow = static_cast<pixel *>(screen->pixels);
+	const int *src = &heatMap[0];
+	
+	destRow = &destRow[origRect.y*pitch + origRect.x];
+	
+	//Draw heatmap.
+	for (int i = 0; i < size; ++i)
+	{
+		pixel *dest = destRow;
+		
+		for (int j = 0; j < size; ++j)
+		{
+			const long heat = (768L*(long)(*src++ - minHeat))/maxHeat;
+			
+			if (heat >= 768) *dest++ = pixel(255, 255, 255);
+			else if (heat >= 512) *dest++ = pixel(255, 255, (unsigned char)(heat - 512));
+			else if (heat >= 256) *dest++ = pixel(255, (unsigned char)(heat - 256), 0);
+			else *dest++ = pixel((unsigned char)(heat - 0), 0, 0);
+		}
+		
+		destRow += pitch;
 	}
 	
 	SDL_UnlockSurface(screen);
@@ -465,46 +588,60 @@ void DrawerSDL::drawGraphMatrixClustering(const Graph &graph, const vector<int> 
 	//Draw clustered graph matrix.
 	SortByPart sorter(cmp);
 	vector<int> pi(graph.nrVertices);
+	vector<int> piInv(graph.nrVertices);
 	
 	for (int i = 0; i < graph.nrVertices; ++i) pi[i] = i;
 	
 	sort(pi.begin(), pi.end(), sorter);
+	
+	for (int i = 0; i < graph.nrVertices; ++i) piInv[pi[i]] = i;
+	
+	//Clear heatmap.
+	heatMap.assign(size*size, 0);
+
+	for (int i = 0; i < graph.nrVertices; ++i)
+	{
+		const int y = ((long)size*(long)piInv[i])/(long)graph.nrVertices;
+		int *row = &heatMap[y*size];
+		const int2 r = graph.neighbourRanges[i];
+		
+		for (int j = r.x; j < r.y; ++j)
+		{
+			const int2 n = graph.neighbours[j];
+			
+			row[(((long)size*(long)piInv[n.x])/(long)graph.nrVertices)] += n.y;
+		}
+	}
+	
+	//Determine minimum and maximum.
+	const long minHeat = *min_element(heatMap.begin(), heatMap.end()), maxHeat = *max_element(heatMap.begin(), heatMap.end());
 	
 	//Clear part of the screen.
 	SDL_FillRect(screen, &permRect, clearColour);
 	
 	SDL_LockSurface(screen);
 	
-	buffer = static_cast<pixel *>(screen->pixels);
+	pixel *destRow = static_cast<pixel *>(screen->pixels);
+	const int *src = &heatMap[0];
 	
-	//Find minimum and maximum weight.
-	int minWgt = INT_MAX, maxWgt = INT_MIN;
+	destRow = &destRow[permRect.y*pitch + permRect.x];
 	
-	for (vector<int2>::const_iterator i = graph.neighbours.begin(); i != graph.neighbours.end(); ++i)
+	//Draw heatmap.
+	for (int i = 0; i < size; ++i)
 	{
-		minWgt = min(minWgt, i->y);
-		maxWgt = max(maxWgt, i->y);
-	}
-
-	//Draw permuted and coloured graph.
-	vector<int> piInv(graph.nrVertices);
-	
-	for (int i = 0; i < graph.nrVertices; ++i) piInv[pi[i]] = i;
-	
-	for (int i = 0; i < graph.nrVertices; ++i)
-	{
-		const int y = ((long)permRect.h*(long)piInv[i])/(long)graph.nrVertices;
-		pixel *cp = &buffer[(y + permRect.y)*pitch + permRect.x];
-		const int2 r = graph.neighbourRanges[i];
-		const int c0 = cmp[i];
+		pixel *dest = destRow;
 		
-		for (int j = r.x; j < r.y; ++j)
+		for (int j = 0; j < size; ++j)
 		{
-			const int2 n = graph.neighbours[j];
-			pixel *dest = &cp[(((long)permRect.w*(long)piInv[n.x])/(long)graph.nrVertices)];
+			const long heat = (768L*(long)(*src++ - minHeat))/maxHeat;
 			
-			*dest = pixel(max(dest->r, static_cast<unsigned char>((255*(n.y - minWgt))/maxWgt)), (c0 == cmp[n.x] ? 128 : 0), 255);
+			if (heat >= 768) *dest++ = pixel(255, 255, 255);
+			else if (heat >= 512) *dest++ = pixel(255, 255, (unsigned char)(heat - 512));
+			else if (heat >= 256) *dest++ = pixel(255, (unsigned char)(heat - 256), 0);
+			else *dest++ = pixel((unsigned char)(heat - 0), 0, 0);
 		}
+		
+		destRow += pitch;
 	}
 	
 	SDL_UnlockSurface(screen);

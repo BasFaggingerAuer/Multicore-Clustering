@@ -20,6 +20,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <iostream>
 #include <string>
 #include <vector>
+#include <map>
+#include <set>
 #include <cassert>
 
 #include "graph.h"
@@ -46,6 +48,7 @@ class BioGraph
 		
 		void clear();
 		std::istream &readTAB2(std::istream &, const std::string &);
+		std::istream &readRAW(std::istream &, const double &);
 
 		template <typename T>
 		void convert(Graph &g, const T &conv) const
@@ -56,20 +59,30 @@ class BioGraph
 			if (vertices.empty() || edges.empty()) return;
 			
 			g.nrVertices = static_cast<int>(vertices.size());
-			g.nrEdges = static_cast<int>(edges.size());
 			g.neighbourRanges.assign(g.nrVertices, make_int2(0, 0));
 			g.vertexWeights.assign(g.nrVertices, 0);
-			g.neighbours.assign(2*g.nrEdges, make_int2(0, 0));
 #ifndef LEAN
 			g.coordinates.assign(g.nrVertices, make_float2(0.0, 0.0));
 #endif
 			
+			//Count number of edges.
+			g.nrEdges = 0;
+			
 			for (std::vector<BioEdge>::const_iterator i = edges.begin(); i != edges.end(); ++i)
 			{
+				const int score = conv(i->score);
+				
 				assert(i->x >= 0 && i->x < g.nrVertices && i->y >= 0 && i->y < g.nrVertices);
-				g.neighbourRanges[i->x].y++;
-				g.neighbourRanges[i->y].y++;
+				
+				if (score > 0)
+				{
+					g.nrEdges++;
+					g.neighbourRanges[i->x].y++;
+					g.neighbourRanges[i->y].y++;
+				}
 			}
+			
+			g.neighbours.assign(2*g.nrEdges, make_int2(0, 0));
 			
 			for (int i = 1; i < g.nrVertices; ++i) g.neighbourRanges[i].x += g.neighbourRanges[i - 1].x + g.neighbourRanges[i - 1].y;
 			
@@ -82,10 +95,11 @@ class BioGraph
 			{
 				const int score = conv(i->score);
 				
-				assert(score > 0);
-				
-				g.neighbours[g.neighbourRanges[i->x].y++] = make_int2(i->y, score);
-				g.neighbours[g.neighbourRanges[i->y].y++] = make_int2(i->x, score);
+				if (score > 0)
+				{
+					g.neighbours[g.neighbourRanges[i->x].y++] = make_int2(i->y, score);
+					g.neighbours[g.neighbourRanges[i->y].y++] = make_int2(i->x, score);
+				}
 			}
 			
 #ifndef NDEBUG
@@ -100,12 +114,25 @@ class BioGraph
 			g.setClusterWeights();
 			
 #ifndef NDEBUG
-			std::cerr << "Created a graph with " << g.nrVertices << " vertices and " << g.nrEdges << " edges from biological data." << std::endl;
+			std::cerr << "Created a graph with " << g.nrVertices << " vertices and " << g.nrEdges << "/" << edges.size() << " (" << (100*g.nrEdges)/edges.size() << "%) edges from biological data." << std::endl;
 #endif
 		};
 		
-		std::vector<std::string> vertices;
+		std::vector<int> vertices;
 		std::vector<BioEdge> edges;
+};
+
+class GeneOntology
+{
+	public:
+		GeneOntology();
+		~GeneOntology();
+		
+		void clear();
+		std::istream &readGene2go(std::istream &);
+		void clusterOntology(std::ostream &, const BioGraph &, const std::vector<int> &) const;
+		
+		std::map<int, std::set<std::string> > genes;
 };
 
 }

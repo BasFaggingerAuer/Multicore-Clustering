@@ -218,9 +218,7 @@ istream &Graph::readMETIS(istream &in)
 	
 	setClusterWeights();
 
-#ifndef NDEBUG
 	cerr << "Read a METIS graph with " << nrVertices << " vertices and " << nrEdges << " edges." << endl;
-#endif
 
 	return in;
 }

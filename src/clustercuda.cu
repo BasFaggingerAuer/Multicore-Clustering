@@ -444,7 +444,7 @@ __global__ void d_coarsenCompressNeighbours(int2 * const neighbourRanges, int2 *
 		return;
 	}
 	
-	//Sort neighbour ranges.
+	//Sort neighbours.
 	d_coarsenHeapSort(&neighbours[si.x], si.y - si.x);
 	
 	//Extract unique neighbours.

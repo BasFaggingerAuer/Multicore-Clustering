@@ -7,6 +7,8 @@ target_link_libraries(gpustat ${CUDA_LIBRARY})
 add_executable(graphstat graphstat.cpp)
 target_link_libraries(graphstat ${Boost_LIBRARIES})
 
+add_executable(extractcoexp extractcoexp.cpp)
+
 cuda_add_executable(clu clu.cpp)
 target_link_libraries(clu ${CUDA_LIBRARY} ${TBB_LIBRARY} ${Boost_LIBRARIES})
 target_link_libraries(clu cluster)

@@ -161,18 +161,15 @@ istream &BioGraph::readRAW(istream &in, const double &minScore)
 		if (line.length() < 2) continue;
 		if (line[0] == '#') continue;
 		
-		//Find all words within this line.
-		size_t wordStart = 0, wordEnd = 0;
+		//Convert all separators to spaces.
+		for (string::iterator i = line.begin(); i != line.end(); ++i) if (*i == '\t' || *i == ',' || *i == ';' || *i == ':' || *i == '|') *i = ' ';
+		
+		//Extract all words.
 		vector<string> words;
+		istringstream sline(line);
+		string word;
 		
-		while ((wordEnd = line.find_first_of(" \t,;:|", wordStart + 1)) != string::npos)
-		{
-			if (wordEnd > wordStart + 1) words.push_back(line.substr(wordStart, wordEnd - wordStart));
-			wordStart = wordEnd;
-		}
-		
-		//Get the last word.
-		words.push_back(line.substr(wordStart));
+		while (sline >> word) words.push_back(word);
 		
 		if (words.size() != 3)
 		{

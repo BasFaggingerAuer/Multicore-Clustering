@@ -17,14 +17,20 @@ project(CLUSTER)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CLUSTER_SOURCE_DIR})
 
+set(TBB_INSTALL_DIR 
+"/data/tools/tbb40_20110809oss/build/linux_intel64_gcc_cc4.4.3_libc2.5_kernel2.6.18_release"
+"/data/tools/tbb40_20110809oss/include"
+"/data/tools/tbb40_20110809oss")
+set(BOOST_ROOT "/data/tools/boost_1_47_0/prefix")
+
 find_package(CUDA REQUIRED)
 find_package(CUDAThrust REQUIRED)
 find_package(TBB REQUIRED)
 find_package(Boost COMPONENTS iostreams program_options REQUIRED)
 
 #set(CMAKE_CXX_FLAGS "-O2 -g -Wall -Wextra -Wshadow -ansi -pedantic -DTIME")
-set(CMAKE_CXX_FLAGS "-O2 -g -Wall -Wextra -Wno-long-long -Wno-unused-parameter -ansi -DTIME")
-#set(CMAKE_CXX_FLAGS "-O3 -Wall -ffast-math -DNDEBUG -DLEAN")
+#set(CMAKE_CXX_FLAGS "-O2 -g -Wall -Wextra -Wno-long-long -Wno-unused-parameter -ansi -DTIME")
+set(CMAKE_CXX_FLAGS "-O3 -Wall -ffast-math -DNDEBUG -DLEAN")
 set(CMAKE_EXE_LINKER_FLAGS "-lrt")
 #set(CUDA_NVCC_FLAGS -ccbin gcc-4.4 -Xptxas -dlcm=cg)
 #set(CUDA_NVCC_FLAGS -ccbin gcc-4.4)

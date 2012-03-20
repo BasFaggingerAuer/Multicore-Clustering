@@ -165,7 +165,7 @@ int main(int argc, char **argv)
 	int scoreMode = 0;
 	
 	string experiment = "Negative Genetic";
-	double minCorr = 0.5;
+	double minCorr = 0.0;
 	string geneOntologyFileName = "";
 	string fileName = "";
 	string gnuplotFileName = "";

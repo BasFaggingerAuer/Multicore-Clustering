@@ -208,7 +208,7 @@ istream &BioGraph::readRAW(istream &in, const double &minScore)
 		}
 		
 #ifndef NDEBUG
-		if (vertices.size() > count1 + 100 || edges.size() > count2 + 1000)
+		if (vertices.size() > count1 + 1000 || edges.size() > count2 + 100000)
 		{
 			count1 = vertices.size();
 			count2 = edges.size();
@@ -322,6 +322,7 @@ void GeneOntology::clusterOntology(ostream &out, const BioGraph &graph, const ve
 	}
 	
 	//Determine cluster properties.
+	vector<set<int> > clusterEntrezs(nrClusters, set<int>());
 	vector<set<string> > clusterProperties(nrClusters, set<string>());
 	
 	for (int i = 0; i < static_cast<int>(graph.vertices.size()); ++i)
@@ -337,10 +338,24 @@ void GeneOntology::clusterOntology(ostream &out, const BioGraph &graph, const ve
 			cerr << "Unable to find gene with Entrez ID " << graph.vertices[i] << "!" << endl;
 			clusterProperties[cluster[i]].insert("UNKNOWN");
 		}
+		
+		clusterEntrezs[cluster[i]].insert(graph.vertices[i]);
 	}
 	
 	//Write information.
 	out << nrClusters << " clusters, of which " << nrSingletons << " (" << (100*nrSingletons)/nrClusters << "%) are singletons:" << endl;
+	
+	for (int i = 0; i < nrClusters; ++i)
+	{
+		if (nrClusterVertices[i] > 1)
+		{
+			out << i << ", " << clusterEntrezs[i].size() << "/" << nrClusterVertices[i] << " Entrez IDs: ";
+			
+			for (set<int>::const_iterator j = clusterEntrezs[i].begin(); j != clusterEntrezs[i].end(); ++j) out << *j << ", ";
+			
+			out << endl;
+		}
+	}
 	
 	for (int i = 0; i < nrClusters; ++i)
 	{

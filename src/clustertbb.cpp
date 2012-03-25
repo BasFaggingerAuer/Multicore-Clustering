@@ -103,10 +103,26 @@ ClusterTBB::~ClusterTBB()
 
 vector<int> ClusterTBB::cluster(const Graph &graph, const double &quality, Drawer *drawer) const
 {
+	vector<int> tmp;
+	
+	return clusterPermute(tmp, graph, quality, drawer);
+}
+
+vector<int> ClusterTBB::clusterPermute(vector<int> &permute, const Graph &graph, const double &quality, Drawer *drawer) const
+{
 #ifdef TIME
 	tick_count clusterStart = tick_count::now();
 	double matchTime = 0.0, coarsenTime = 0.0, totalTime = 0.0;
 #endif
+	
+	//Return trivial clustering if there are no edges.
+	if (graph.nrVertices <= 0 || graph.nrEdges <= 0)
+	{
+		vector<int> tmp(max(graph.nrVertices, 1));
+		
+		cerr << "WARNING: Graph is empty!" << endl;
+		return tmp;
+	}
 	
 	//Draw the graph in its original state.
 	if (drawer)
@@ -114,6 +130,9 @@ vector<int> ClusterTBB::cluster(const Graph &graph, const double &quality, Drawe
 		drawer->drawGraphMatrix(graph);
 		drawer->drawGraphCoordinates(graph);
 	}
+	
+	//Initialise permutation to the identity if a permutation is desired.
+	if (static_cast<int>(permute.size()) == graph.nrVertices) parallel_sequence(permute.begin(), permute.end());
 	
 	//Coarsen the graph recursively by merging clusters whose merge would increase modularity.
 	GraphCoarseningTBB coarsen;
@@ -185,6 +204,37 @@ vector<int> ClusterTBB::cluster(const Graph &graph, const double &quality, Drawe
 		
 		cur = &tmp.graph;
 		++nrLevels;
+		
+		//If desired, also update the permutation using a counting sort.
+		if (static_cast<int>(permute.size()) == graph.nrVertices)
+		{
+			vector<int> counts(cur->nrVertices, 0);
+			vector<int> offsets(cur->nrVertices + 1, 0);
+			vector<int> tmpPermute(graph.nrVertices);
+			
+			assert(1 + *max_element(clustering.begin(), clustering.end()) == cur->nrVertices);
+			
+			for (int i = 0; i < graph.nrVertices; ++i) counts[clustering[permute[i]]]++;
+			
+			//Sum offsets.
+			parallel_inclusive_scan(counts.begin(), counts.end(), offsets.begin() + 1);
+			
+			assert(offsets[cur->nrVertices] == graph.nrVertices);
+			
+			//Create new permutation.
+			for (int i = 0; i < graph.nrVertices; ++i) tmpPermute[offsets[clustering[permute[i]]]++] = permute[i];
+			
+			assert(offsets[cur->nrVertices - 1] == graph.nrVertices);
+			permute = tmpPermute;
+			
+#ifndef NDEBUG
+			//Check if this is a valid permutation.
+			vector<bool> check(graph.nrVertices, false);
+			
+			for (vector<int>::const_iterator i = permute.begin(); i != permute.end(); ++i) check[*i] = true;
+			for (vector<bool>::const_iterator i = check.begin(); i != check.end(); ++i) assert(*i);
+#endif
+		}
 		
 #ifndef LEAN
 		//Draw intermediate clustering.

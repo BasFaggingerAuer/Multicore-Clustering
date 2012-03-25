@@ -23,6 +23,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <map>
 #include <set>
 #include <cassert>
+#include <tbb/tbb.h>
 
 #include "graph.h"
 
@@ -38,6 +39,25 @@ class BioEdge
 		
 		int x, y;
 		double score;
+};
+
+//Calculate all integer edge weights in parallel.
+template <typename T>
+class BioGraphWeightFor
+{
+	public:
+		BioGraphWeightFor(std::vector<int> &_v, const std::vector<BioEdge> &_w, const T &_conv) : v(_v), w(_w), conv(_conv) {};
+		~BioGraphWeightFor() {};
+		
+		void operator () (const tbb::blocked_range<size_t> &r) const
+		{
+			for (size_t i = r.begin(); i != r.end(); ++i) v[i] = conv(w[i].score);
+		};
+		
+	private:
+		std::vector<int> &v;
+		const std::vector<BioEdge> &w;
+		const T &conv;
 };
 
 class BioGraph
@@ -65,12 +85,23 @@ class BioGraph
 			g.coordinates.assign(g.nrVertices, make_float2(0.0, 0.0));
 #endif
 			
+			//Calculate edge scores in parallel.
+			std::vector<int> edgeScores(edges.size(), 0);
+			BioGraphWeightFor<T> tmp(edgeScores, edges, conv);
+			
+			tbb::parallel_for(tbb::blocked_range<size_t>(0, edges.size()), tmp);
+			
+
+#ifndef NDEBUG
+			std::cerr << "Scores lie between " << *min_element(edgeScores.begin(), edgeScores.end()) << " and " << *max_element(edgeScores.begin(), edgeScores.end()) << "." << std::endl;
+#endif
+			
 			//Count number of edges.
 			g.nrEdges = 0;
 			
 			for (std::vector<BioEdge>::const_iterator i = edges.begin(); i != edges.end(); ++i)
 			{
-				const int score = conv(i->score);
+				const int score = edgeScores[i - edges.begin()];
 				
 				assert(i->x >= 0 && i->x < g.nrVertices && i->y >= 0 && i->y < g.nrVertices);
 				
@@ -80,6 +111,13 @@ class BioGraph
 					g.neighbourRanges[i->x].y++;
 					g.neighbourRanges[i->y].y++;
 				}
+			}
+			
+			if (g.nrEdges <= 0)
+			{
+				std::cerr << "WARNING: Empty graph with these edge weights!" << std::endl;
+				g.clear();
+				return;
 			}
 			
 			g.neighbours.assign(2*g.nrEdges, make_int2(0, 0));
@@ -93,7 +131,7 @@ class BioGraph
 			//Score edges with the desired metric.
 			for (std::vector<BioEdge>::const_iterator i = edges.begin(); i != edges.end(); ++i)
 			{
-				const int score = conv(i->score);
+				const int score = edgeScores[i - edges.begin()];
 				
 				if (score > 0)
 				{

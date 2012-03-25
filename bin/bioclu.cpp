@@ -34,6 +34,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <boost/iostreams/filtering_stream.hpp>
 #include <boost/iostreams/filter/gzip.hpp>
 
+#define SAVE_SLIDES
+
 using namespace std;
 using namespace clu;
 using namespace boost;
@@ -74,6 +76,7 @@ class DrawerSDL : public Drawer
 		void prevSlide();
 		
 		void drawGraphMatrix(const Graph &);
+		void drawGraphMatrixPermutation(const Graph &, const std::vector<int> &);
 		void drawGraphMatrixClustering(const Graph &, const std::vector<int> &);
 		void drawGraphCoordinates(const Graph &);
 		void drawGraphClustering(const Graph &, const std::vector<int> &);
@@ -81,23 +84,17 @@ class DrawerSDL : public Drawer
 	private:
 		void addSlide();
 		
-		inline pixel fromHue(const int &c) const
-		{
-			const float h = 123.456f*(float)c + 654.123f;
-			
-			return pixel((unsigned char)(254.0f*min(max(0.0f, 2.0f*cosf(h)), 1.0f)), (unsigned char)(254.0f*min(max(0.0f, 2.0f*cosf(h + 2.0f*M_PI/3.0f)), 1.0f)), (unsigned char)(254.0f*min(max(0.0f, 2.0f*cosf(h + 4.0f*M_PI/3.0f)), 1.0f)));
-		};
-		
 		SDL_Surface * const screen;
 		const int size;
 		const int pitch;
 		const unsigned int clearColour;
 		vector<int> heatMap;
+		vector<pixel> hueMap;
 		
 		int curSlide;
 		vector<SDL_Surface *> slides;
 		
-		SDL_Rect origRect, permRect;
+		SDL_Rect origRect, permRect, hueRect;
 };
 
 //Different available scoring functions for the graph edges.
@@ -155,13 +152,25 @@ class ScoreGaussian : public ScoreFunction
 		int operator () (const double &score) const
 		{
 			const double sigma = 0.55 - 0.5*t;
-			return 1 + static_cast<int>(floor(256.0*exp((min(fabs(score), 1.0) - 1.0)/(sigma*sigma))));
+			return static_cast<int>(floor(256.0*exp((min(fabs(score), 1.0) - 1.0)/(sigma*sigma))));
+		};
+};
+
+class ScoreScale : public ScoreFunction
+{
+	public:
+		ScoreScale() : ScoreFunction("scale") {};
+		~ScoreScale() {};
+		
+		int operator () (const double &score) const
+		{
+			return static_cast<int>(256.0*fabs(score));
 		};
 };
 
 int main(int argc, char **argv)
 {
-	int drawSize = 512;
+	int drawSize = 1024;
 	int scoreMode = 0;
 	
 	string experiment = "Negative Genetic";
@@ -181,7 +190,7 @@ int main(int argc, char **argv)
 		("experiment,e", program_options::value<string>(), "set BioGRID experiment (e.g. Positive Genetic)")
 		("corr,c", program_options::value<double>(), "set minimum correlation")
 		("ontology,o", program_options::value<string>(), "read Gene Ontology data")
-		("score,s", program_options::value<int>(), "set score mode (0 = treshhold, 1 = power, 2 = Gaussian)");
+		("score,s", program_options::value<int>(), "set score mode (0 = none, 1 = treshhold, 2 = power, 3 = Gaussian)");
 		
 		program_options::positional_options_description pos;
 		
@@ -285,7 +294,7 @@ int main(int argc, char **argv)
 		return -1;
 	}
 	
-	SDL_Surface *screen = SDL_SetVideoMode(2*drawSize, drawSize, 24, SDL_SWSURFACE);
+	SDL_Surface *screen = SDL_SetVideoMode(32 + 2*drawSize, drawSize, 24, SDL_SWSURFACE);
 	
 	if (!screen)
 	{
@@ -302,14 +311,15 @@ int main(int argc, char **argv)
 	DrawerSDL drawer(screen, drawSize);
 	
 	//Create clusterer.
-	Cluster *cluster = new ClusterTBB();
+	ClusterTBB *cluster = new ClusterTBB();
 	
 	//Create score function.
 	ScoreFunction *score;
 	
-	if (scoreMode == 1) score = new ScorePower();
-	else if (scoreMode == 2) score = new ScoreGaussian();
-	else score = new ScoreThreshold();
+	if (scoreMode == 1) score = new ScoreThreshold();
+	else if (scoreMode == 2) score = new ScorePower();
+	else if (scoreMode == 3) score = new ScoreGaussian();
+	else score = new ScoreScale();
 	
 	cerr << "Using " << score->name << " score mode (" << scoreMode << "), experiment '" << experiment << "', and minimum correlation " << minCorr << " ..." << endl;
 	
@@ -368,14 +378,18 @@ int main(int argc, char **argv)
 				score->parameter(static_cast<double>(quality)/9.0);
 				bioGraph.convert(graph, *score);
 				
-				vector<int> component = cluster->cluster(graph, 1.0, 0);
-	
-				drawer.drawGraphMatrix(graph);
-				drawer.drawGraphMatrixClustering(graph, component);
+				if (!graph.empty())
+				{
+					vector<int> permute(graph.nrVertices);
+					vector<int> component = cluster->clusterPermute(permute, graph, 1.0, 0);
+		
+					drawer.drawGraphMatrix(graph);
+					drawer.drawGraphMatrixPermutation(graph, permute);
+					
+					cerr << "Generated clustering with modularity " << Cluster::modularity(graph, component) << "." << endl;
 				
-				cerr << "Generated clustering with modularity " << Cluster::modularity(graph, component) << "." << endl;
-			
-				if (!ontology.genes.empty()) ontology.clusterOntology(cout, bioGraph, component);
+					if (!ontology.genes.empty()) ontology.clusterOntology(cout, bioGraph, component);
+				}
 			}
 			catch (std::exception &e)
 			{
@@ -397,14 +411,17 @@ int main(int argc, char **argv)
 				score->parameter(sigma);
 				bioGraph.convert(graph, *score);
 				
+				cerr << "\r" << sigma << "      ";
+				
 				//There should not be any isolated vertices.
 				bool isolated = false;
 				
 				for (vector<int2>::const_iterator i = graph.neighbourRanges.begin(); i != graph.neighbourRanges.end() && !isolated; ++i) if (i->x >= i->y) isolated = true;
 				
-				if (!isolated)
+				if (!isolated && !graph.empty())
 				{
-					const vector<int> clustering = cluster->cluster(graph, 1.0, 0);
+					vector<int> permute(graph.nrVertices);
+					const vector<int> clustering = cluster->clusterPermute(permute, graph, 1.0, 0);
 					const double modularity = Cluster::modularity(graph, clustering);
 					
 					if (modularity > bestModularity)
@@ -415,14 +432,17 @@ int main(int argc, char **argv)
 						
 						cerr << "Found modularity " << bestModularity << " clustering at sigma " << bestSigma << "." << endl;
 						drawer.drawGraphMatrix(graph);
-						drawer.drawGraphMatrixClustering(graph, bestClustering);
+						drawer.drawGraphMatrixPermutation(graph, permute);
 						SDL_Flip(screen);
 						SDL_Delay(10);
 					}
 				}
 			}
 			
+			cerr << endl;
+			
 			//Export related genes.
+			cout << "Found modularity " << bestModularity << " clustering at sigma " << bestSigma << " for " << score->name << " scoring method." << endl;
 			if (!ontology.genes.empty()) ontology.clusterOntology(cout, bioGraph, bestClustering);
 			
 			cerr << "Done." << endl;
@@ -445,11 +465,7 @@ DrawerSDL::DrawerSDL(SDL_Surface *_screen, const int &_size) :
 	screen(_screen),
 	size(_size),
 	pitch(screen->w),
-#ifdef SAVE_SLIDES
-	clearColour(0xffffffff),
-#else
 	clearColour(0x00000000),
-#endif
 	heatMap(size*size, 0),
 	curSlide(0)
 {
@@ -457,6 +473,20 @@ DrawerSDL::DrawerSDL(SDL_Surface *_screen, const int &_size) :
 	
 	origRect.x = 0; origRect.y = 0; origRect.w = size; origRect.h = size;
 	permRect.x = size; permRect.y = 0; permRect.w = size; permRect.h = size;
+	hueRect.x = 2*size; hueRect.y = 0; hueRect.w = 32; hueRect.h = size;
+	
+	hueMap.assign(1024, pixel(0, 0, 0));
+	
+	for (size_t i = 0; i < hueMap.size(); ++i)
+	{
+		double s = static_cast<double>(i)/static_cast<double>(hueMap.size());
+		
+		s = 1.0 - pow(1.0 - s, 4.0);
+		
+		hueMap[i] = pixel(static_cast<unsigned char>(127.0*(1.0 + cos(1.5*M_PI*s + 2.0*M_PI/3.0))),
+				static_cast<unsigned char>(127.0*(1.0 + cos(1.5*M_PI*s + 4.0*M_PI/3.0))),
+				static_cast<unsigned char>(127.0*(1.0 + cos(1.5*M_PI*s + 0.0*M_PI/3.0))));
+	}
 }
 
 DrawerSDL::~DrawerSDL()
@@ -495,9 +525,9 @@ void DrawerSDL::addSlide()
 	slides.push_back(slide);
 	
 #ifdef SAVE_SLIDES
-	char outFile[] = "map0000.bmp";
+	char outFile[] = "clu0000.bmp";
 	
-	sprintf(outFile, "map%04d.bmp", (int)slides.size());
+	sprintf(outFile, "clu%04d.bmp", (int)slides.size());
 	SDL_SaveBMP(screen, outFile);
 #endif
 }
@@ -532,7 +562,7 @@ void DrawerSDL::drawGraphMatrix(const Graph &graph)
 	}
 	
 	//Determine minimum and maximum.
-	const long minHeat = *min_element(heatMap.begin(), heatMap.end()), maxHeat = *max_element(heatMap.begin(), heatMap.end());
+	const long maxHeat = 1 + *max_element(heatMap.begin(), heatMap.end());
 	
 	//Clear part of the screen.
 	SDL_FillRect(screen, &origRect, clearColour);
@@ -551,12 +581,7 @@ void DrawerSDL::drawGraphMatrix(const Graph &graph)
 		
 		for (int j = 0; j < size; ++j)
 		{
-			const long heat = (768L*(long)(*src++ - minHeat))/maxHeat;
-			
-			if (heat >= 768) *dest++ = pixel(255, 255, 255);
-			else if (heat >= 512) *dest++ = pixel(255, 255, (unsigned char)(heat - 512));
-			else if (heat >= 256) *dest++ = pixel(255, (unsigned char)(heat - 256), 0);
-			else *dest++ = pixel((unsigned char)(heat - 0), 0, 0);
+			*dest++ = hueMap[(static_cast<long>(*src++)*hueMap.size())/maxHeat];
 		}
 		
 		destRow += pitch;
@@ -580,6 +605,84 @@ class SortByPart
 	private:
 		const vector<int> &v;
 };
+
+void DrawerSDL::drawGraphMatrixPermutation(const Graph &graph, const vector<int> &pi)
+{
+	assert((int)pi.size() == graph.nrVertices);
+	
+	//Draw permuted graph matrix.
+	vector<int> piInv(graph.nrVertices);
+	
+	for (int i = 0; i < graph.nrVertices; ++i) piInv[pi[i]] = i;
+	
+	//Clear heatmap.
+	heatMap.assign(size*size, 0);
+
+	for (int i = 0; i < graph.nrVertices; ++i)
+	{
+		const int y = ((long)size*(long)piInv[i])/(long)graph.nrVertices;
+		int *row = &heatMap[y*size];
+		const int2 r = graph.neighbourRanges[i];
+		
+		for (int j = r.x; j < r.y; ++j)
+		{
+			const int2 n = graph.neighbours[j];
+			
+			row[(((long)size*(long)piInv[n.x])/(long)graph.nrVertices)] += n.y;
+		}
+	}
+	
+	//Determine minimum and maximum.
+	const long minHeat = *min_element(heatMap.begin(), heatMap.end()), maxHeat = 1 + *max_element(heatMap.begin(), heatMap.end());
+	
+	//Clear part of the screen.
+	SDL_FillRect(screen, &permRect, clearColour);
+	
+	SDL_LockSurface(screen);
+	
+	pixel *destRow = static_cast<pixel *>(screen->pixels);
+	const int *src = &heatMap[0];
+	
+	destRow = &destRow[permRect.y*pitch + permRect.x];
+	
+	//Draw heatmap.
+	for (int i = 0; i < size; ++i)
+	{
+		pixel *dest = destRow;
+		
+		for (int j = 0; j < size; ++j)
+		{
+			*dest++ = hueMap[(static_cast<long>(*src++ - minHeat)*hueMap.size())/(maxHeat - minHeat)];
+			//*dest++ = hueMap[(static_cast<long>(j)*hueMap.size())/size];
+		}
+		
+		destRow += pitch;
+	}
+	
+	//Draw hues.
+	SDL_FillRect(screen, &hueRect, clearColour);
+	
+	destRow = static_cast<pixel *>(screen->pixels);
+	destRow = &destRow[hueRect.y*pitch + hueRect.x];
+	
+	for (int i = 0; i < size; ++i)
+	{
+		pixel *dest = destRow;
+		const pixel hue = hueMap[(static_cast<long>(size - i - 1)*hueMap.size())/size];
+		
+		for (int j = 0; j < 32; ++j)
+		{
+			*dest++ = hue;
+		}
+		
+		destRow += pitch;
+	}
+	
+	SDL_UnlockSurface(screen);
+	SDL_UpdateRect(screen, permRect.x, permRect.y, permRect.w, permRect.h);
+	
+	addSlide();
+}
 
 void DrawerSDL::drawGraphMatrixClustering(const Graph &graph, const vector<int> &cmp)
 {
@@ -614,7 +717,7 @@ void DrawerSDL::drawGraphMatrixClustering(const Graph &graph, const vector<int> 
 	}
 	
 	//Determine minimum and maximum.
-	const long minHeat = *min_element(heatMap.begin(), heatMap.end()), maxHeat = *max_element(heatMap.begin(), heatMap.end());
+	const long maxHeat = 1 + *max_element(heatMap.begin(), heatMap.end());
 	
 	//Clear part of the screen.
 	SDL_FillRect(screen, &permRect, clearColour);
@@ -633,12 +736,27 @@ void DrawerSDL::drawGraphMatrixClustering(const Graph &graph, const vector<int> 
 		
 		for (int j = 0; j < size; ++j)
 		{
-			const long heat = (768L*(long)(*src++ - minHeat))/maxHeat;
-			
-			if (heat >= 768) *dest++ = pixel(255, 255, 255);
-			else if (heat >= 512) *dest++ = pixel(255, 255, (unsigned char)(heat - 512));
-			else if (heat >= 256) *dest++ = pixel(255, (unsigned char)(heat - 256), 0);
-			else *dest++ = pixel((unsigned char)(heat - 0), 0, 0);
+			*dest++ = hueMap[(static_cast<long>(*src++)*hueMap.size())/maxHeat];
+			//*dest++ = hueMap[(static_cast<long>(j)*hueMap.size())/size];
+		}
+		
+		destRow += pitch;
+	}
+	
+	//Draw hues.
+	SDL_FillRect(screen, &hueRect, clearColour);
+	
+	destRow = static_cast<pixel *>(screen->pixels);
+	destRow = &destRow[hueRect.y*pitch + hueRect.x];
+	
+	for (int i = 0; i < size; ++i)
+	{
+		pixel *dest = destRow;
+		const pixel hue = hueMap[(static_cast<long>(size - i - 1)*hueMap.size())/size];
+		
+		for (int j = 0; j < 32; ++j)
+		{
+			*dest++ = hue;
 		}
 		
 		destRow += pitch;

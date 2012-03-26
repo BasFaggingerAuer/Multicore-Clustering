@@ -343,7 +343,7 @@ void GeneOntology::clusterOntology(ostream &out, const BioGraph &graph, const ve
 	}
 	
 	//Write information.
-	out << nrClusters << " clusters, of which " << nrSingletons << " (" << (100*nrSingletons)/nrClusters << "%) are singletons:" << endl;
+	out << "Clustered biological graph with " << graph.vertices.size() << " vertices and " << graph.edges.size() << " sizes into " << nrClusters << " clusters, of which " << nrSingletons << " (" << (100*nrSingletons)/nrClusters << "%) are singletons:" << endl;
 	
 	for (int i = 0; i < nrClusters; ++i)
 	{
@@ -397,7 +397,19 @@ void GeneOntology::clusterOntology(ostream &out, const BioGraph &graph, const ve
 	
 	double graphAvg = static_cast<double>(graphSum)/static_cast<double>(graph.vertices.size());
 	
+	//Determine other average (all vertices in one big cluster).
+	set<string> allProperties;
+	
+	for (vector<int>::const_iterator i = graph.vertices.begin(); i != graph.vertices.end(); ++i)
+	{
+		map<int, set<string> >::const_iterator j = genes.find(*i);
+		
+		if (j != genes.end()) allProperties.insert(j->second.begin(), j->second.end());
+	}
+	
+	double graphAvg2 = static_cast<double>(allProperties.size())/static_cast<double>(graph.vertices.size());
+	
 	cerr << "Quality: " << graphAvg/clusterAvg << " for " << nrClusters << " clusters and " << nrSingletons << " singletons." << endl;
-	out << "Average number of GO properties per gene in this graph: " << graphAvg << ", versus the average of the average number of GO properties per cluster: " << clusterAvg << ", indicates quality " << graphAvg/clusterAvg << "." << endl;
+	out << "Average number of GO properties per gene in this graph: " << graphAvg << " (every vertex a cluster) and " << graphAvg2 << " (one big cluster), versus the average of the average number of GO properties per cluster: " << clusterAvg << "." << endl;
 }
 

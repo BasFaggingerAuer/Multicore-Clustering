@@ -30,6 +30,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <SDL.h>
 
+#include <tbb/tbb.h>
+
 #include <boost/program_options.hpp>
 #include <boost/iostreams/filtering_stream.hpp>
 #include <boost/iostreams/filter/gzip.hpp>
@@ -401,12 +403,14 @@ int main(int argc, char **argv)
 		else if (quality == 10)
 		{
 			//Find best clustering.
+			const tbb::tick_count t0 = tbb::tick_count::now();
+			
 			Graph graph;
 			double bestModularity = -1.0;
 			double bestSigma = 0.0;
 			vector<int> bestClustering(bioGraph.vertices.size(), 0);
 			
-			for (double sigma = 0.0; sigma <= 1.0; sigma += 0.01)
+			for (double sigma = 0.0; sigma <= 1.0; sigma += 0.001)
 			{
 				score->parameter(sigma);
 				bioGraph.convert(graph, *score);
@@ -430,7 +434,7 @@ int main(int argc, char **argv)
 						bestSigma = sigma;
 						bestClustering = clustering;
 						
-						cerr << "Found modularity " << bestModularity << " clustering at sigma " << bestSigma << "." << endl;
+						cout << "Found modularity " << bestModularity << " clustering at sigma " << bestSigma << "." << endl;
 						drawer.drawGraphMatrix(graph);
 						drawer.drawGraphMatrixPermutation(graph, permute);
 						SDL_Flip(screen);
@@ -441,8 +445,10 @@ int main(int argc, char **argv)
 			
 			cerr << endl;
 			
+			const tbb::tick_count t1 = tbb::tick_count::now();
+			
 			//Export related genes.
-			cout << "Found modularity " << bestModularity << " clustering at sigma " << bestSigma << " for " << score->name << " scoring method." << endl;
+			cout << "Found best modularity " << bestModularity << " clustering at sigma " << bestSigma << " for " << score->name << " scoring method in " << (t1 - t0).seconds() << " seconds." << endl;
 			if (!ontology.genes.empty()) ontology.clusterOntology(cout, bioGraph, bestClustering);
 			
 			cerr << "Done." << endl;
